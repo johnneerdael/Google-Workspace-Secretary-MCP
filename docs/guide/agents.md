@@ -325,4 +325,4 @@ async def morning_routine():
 
 **Remember**: These tools make AI assistants powerful. The safety patterns make them trustworthy. Both are required for a great user experience.
 
-See [USE_CASES.md](USE_CASES.md) for complete workflow examples.
+See [Use Cases](./use-cases) for complete workflow examples.

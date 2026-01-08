@@ -72,3 +72,8 @@ mcp-cli/
 
 # Secret Design Ideas
 # reference/
+
+# VitePress build outputs
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+docs/node_modules/
