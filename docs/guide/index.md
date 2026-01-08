@@ -48,6 +48,7 @@ Meeting suggestions only occur within your working hours.
 
 | Field | Required | Description |
 |-------|----------|-------------|
+| `oauth_mode` | ✅ | `api` (Gmail REST API) or `imap` (IMAP/SMTP) |
 | `imap.host` | ✅ | IMAP server (e.g., `imap.gmail.com`) |
 | `imap.username` | ✅ | Email address |
 | `timezone` | ✅ | IANA timezone string |
@@ -55,6 +56,13 @@ Meeting suggestions only occur within your working hours.
 | `vip_senders` | ✅ | List of priority email addresses |
 | `calendar.enabled` | ❌ | Enable calendar tools (default: `false`) |
 | `allowed_folders` | ❌ | Restrict folder access |
+
+::: tip Choosing oauth_mode
+- Use `api` (default) if you have your own GCP OAuth credentials
+- Use `imap` if using third-party credentials (Thunderbird, GNOME) that lack Gmail API scopes
+
+See [OAuth Workaround](./oauth_workaround) for details on IMAP mode.
+:::
 
 See [Configuration](./configuration) for details.
 

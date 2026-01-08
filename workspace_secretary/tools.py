@@ -7,6 +7,7 @@ from typing import List, Optional, Union, Dict, Any
 
 from mcp.server.fastmcp import FastMCP, Context
 
+from workspace_secretary.config import OAuthMode
 from workspace_secretary.imap_client import ImapClient
 from workspace_secretary.calendar_client import CalendarClient
 from workspace_secretary.gmail_client import GmailClient
@@ -15,13 +16,49 @@ from workspace_secretary.resources import (
     get_smtp_client_from_context,
     get_calendar_client_from_context,
     get_gmail_client_from_context,
+    get_oauth_mode_from_context,
 )
 from workspace_secretary.models import EmailAddress
 
 logger = logging.getLogger(__name__)
 
 
-def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
+def _convert_gmail_query_to_imap(query: str) -> Dict[str, Any]:
+    """Convert Gmail search syntax to IMAP search criteria."""
+    criteria: Dict[str, Any] = {}
+
+    query_lower = query.lower()
+
+    if "is:unread" in query_lower:
+        criteria["UNSEEN"] = True
+    if "is:read" in query_lower:
+        criteria["SEEN"] = True
+    if "has:attachment" in query_lower:
+        criteria["TEXT"] = "Content-Disposition: attachment"
+
+    import re
+
+    from_match = re.search(r"from:(\S+)", query_lower)
+    if from_match:
+        criteria["FROM"] = from_match.group(1)
+
+    to_match = re.search(r"to:(\S+)", query_lower)
+    if to_match:
+        criteria["TO"] = to_match.group(1)
+
+    subject_match = re.search(r'subject:(["\']?)(.+?)\1(?:\s|$)', query, re.IGNORECASE)
+    if subject_match:
+        criteria["SUBJECT"] = subject_match.group(2)
+
+    if not criteria:
+        criteria["ALL"] = True
+
+    return criteria
+
+
+def register_tools(
+    mcp: FastMCP, imap_client: ImapClient, oauth_mode: OAuthMode
+) -> None:
     """Register MCP tools.
 
     Args:
@@ -923,81 +960,165 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
             logger.error(f"Error creating calendar event: {e}")
             return json.dumps({"error": str(e)}, indent=2)
 
-    @mcp.tool()
-    async def gmail_search(
-        query: str,
-        max_results: int = 20,
-        ctx: Context = None,  # type: ignore
-    ) -> str:
-        """Search emails using native Gmail search syntax.
-        Example queries: 'has:attachment', 'from:boss is:unread', 'after:2024/01/01'.
+    if oauth_mode == OAuthMode.API:
 
-        Args:
-            query: Gmail search query string
-            max_results: Max results to return
-            ctx: MCP context
+        @mcp.tool()
+        async def gmail_search(
+            query: str,
+            max_results: int = 20,
+            ctx: Context = None,  # type: ignore
+        ) -> str:
+            """Search emails using native Gmail search syntax.
+            Example queries: 'has:attachment', 'from:boss is:unread', 'after:2024/01/01'.
 
-        Returns:
-            JSON list of message summaries
-        """
-        client = get_gmail_client_from_context(ctx)
-        try:
-            messages = client.search_messages(query, max_results)
-            results = []
-            for m in messages:
-                # Fetch minimal details for the list
-                full_msg = client.get_message(m["id"])
-                if full_msg:
+            Args:
+                query: Gmail search query string
+                max_results: Max results to return
+                ctx: MCP context
+
+            Returns:
+                JSON list of message summaries
+            """
+            client = get_gmail_client_from_context(ctx)
+            try:
+                messages = client.search_messages(query, max_results)
+                results = []
+                for m in messages:
+                    full_msg = client.get_message(m["id"])
+                    if full_msg:
+                        results.append(
+                            {
+                                "id": full_msg.message_id,
+                                "threadId": full_msg.gmail_thread_id,
+                                "from": str(full_msg.from_),
+                                "subject": full_msg.subject,
+                                "date": full_msg.date.isoformat()
+                                if full_msg.date
+                                else None,
+                                "labels": full_msg.gmail_labels,
+                            }
+                        )
+                return json.dumps(results, indent=2)
+            except Exception as e:
+                logger.error(f"Error in gmail_search: {e}")
+                return json.dumps({"error": str(e)}, indent=2)
+
+        @mcp.tool()
+        async def gmail_get_thread(
+            thread_id: str,
+            ctx: Context = None,  # type: ignore
+        ) -> str:
+            """Get an entire conversation thread using Gmail API.
+
+            Args:
+                thread_id: Gmail thread identifier
+                ctx: MCP context
+
+            Returns:
+                JSON list of emails in the thread
+            """
+            client = get_gmail_client_from_context(ctx)
+            try:
+                emails = client.get_thread(thread_id)
+                results = []
+                for e in emails:
                     results.append(
                         {
-                            "id": full_msg.message_id,
-                            "threadId": full_msg.gmail_thread_id,
-                            "from": str(full_msg.from_),
-                            "subject": full_msg.subject,
-                            "date": full_msg.date.isoformat()
-                            if full_msg.date
-                            else None,
-                            "labels": full_msg.gmail_labels,
+                            "id": e.message_id,
+                            "from": str(e.from_),
+                            "subject": e.subject,
+                            "date": e.date.isoformat() if e.date else None,
+                            "content": e.content.get_best_content(),
+                            "labels": e.gmail_labels,
                         }
                     )
-            return json.dumps(results, indent=2)
-        except Exception as e:
-            logger.error(f"Error in gmail_search: {e}")
-            return json.dumps({"error": str(e)}, indent=2)
+                return json.dumps(results, indent=2)
+            except Exception as e:
+                logger.error(f"Error in gmail_get_thread: {e}")
+                return json.dumps({"error": str(e)}, indent=2)
+    else:
 
-    @mcp.tool()
-    async def gmail_get_thread(
-        thread_id: str,
-        ctx: Context = None,  # type: ignore
-    ) -> str:
-        """Get an entire conversation thread using Gmail API.
+        @mcp.tool()
+        async def gmail_search(
+            query: str,
+            max_results: int = 20,
+            ctx: Context = None,  # type: ignore
+        ) -> str:
+            """Search emails using Gmail-like search syntax (IMAP mode).
+            Supports common Gmail operators: from:, to:, subject:, is:unread, has:attachment.
 
-        Args:
-            thread_id: Gmail thread identifier
-            ctx: MCP context
+            Args:
+                query: Search query string
+                max_results: Max results to return
+                ctx: MCP context
 
-        Returns:
-            JSON list of emails in the thread
-        """
-        client = get_gmail_client_from_context(ctx)
-        try:
-            emails = client.get_thread(thread_id)
-            results = []
-            for e in emails:
-                results.append(
+            Returns:
+                JSON list of message summaries
+            """
+            client = get_client_from_context(ctx)
+            try:
+                imap_criteria = _convert_gmail_query_to_imap(query)
+                uids = client.search(imap_criteria, folder="INBOX")
+                uids = uids[:max_results]
+                emails = client.fetch_emails(uids, folder="INBOX")
+                results = []
+                for email in emails:
+                    results.append(
+                        {
+                            "id": email.message_id,
+                            "uid": email.uid,
+                            "from": str(email.from_),
+                            "subject": email.subject,
+                            "date": email.date.isoformat() if email.date else None,
+                        }
+                    )
+                return json.dumps(results, indent=2)
+            except Exception as e:
+                logger.error(f"Error in gmail_search (IMAP): {e}")
+                return json.dumps({"error": str(e)}, indent=2)
+
+        @mcp.tool()
+        async def gmail_get_thread(
+            thread_id: str,
+            ctx: Context = None,  # type: ignore
+        ) -> str:
+            """Get an entire conversation thread (IMAP mode).
+            Uses message threading headers (References, In-Reply-To).
+
+            Args:
+                thread_id: Message-ID or UID of any message in the thread
+                ctx: MCP context
+
+            Returns:
+                JSON list of emails in the thread
+            """
+            client = get_client_from_context(ctx)
+            try:
+                uid = int(thread_id)
+                emails = client.fetch_thread(uid)
+                results = []
+                for e in emails:
+                    results.append(
+                        {
+                            "id": e.message_id,
+                            "uid": e.uid,
+                            "from": str(e.from_),
+                            "subject": e.subject,
+                            "date": e.date.isoformat() if e.date else None,
+                            "content": e.content.get_best_content(),
+                        }
+                    )
+                return json.dumps(results, indent=2)
+            except ValueError:
+                return json.dumps(
                     {
-                        "id": e.message_id,
-                        "from": str(e.from_),
-                        "subject": e.subject,
-                        "date": e.date.isoformat() if e.date else None,
-                        "content": e.content.get_best_content(),
-                        "labels": e.gmail_labels,
-                    }
+                        "error": f"Invalid thread_id '{thread_id}'. In IMAP mode, use numeric UID."
+                    },
+                    indent=2,
                 )
-            return json.dumps(results, indent=2)
-        except Exception as e:
-            logger.error(f"Error in gmail_get_thread: {e}")
-            return json.dumps({"error": str(e)}, indent=2)
+            except Exception as e:
+                logger.error(f"Error in gmail_get_thread (IMAP): {e}")
+                return json.dumps({"error": str(e)}, indent=2)
 
     @mcp.tool()
     async def get_calendar_availability(
@@ -1023,254 +1144,461 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
             logger.error(f"Error getting calendar availability: {e}")
             return json.dumps({"error": str(e)}, indent=2)
 
-    @mcp.tool()
-    async def get_daily_briefing(
-        date: Optional[str] = None,
-        ctx: Context = None,  # type: ignore
-    ) -> str:
-        """Get a combined briefing of calendar events and candidate emails for prioritization.
-        Returns high-recall email candidates with signals for LLM-based prioritization.
-        Defaults to today in configured timezone.
+    if oauth_mode == OAuthMode.API:
 
-        Args:
-            date: Optional date in YYYY-MM-DD format. Defaults to today.
-            ctx: MCP context
+        @mcp.tool()
+        async def get_daily_briefing(
+            date: Optional[str] = None,
+            ctx: Context = None,  # type: ignore
+        ) -> str:
+            """Get a combined briefing of calendar events and candidate emails for prioritization.
+            Returns high-recall email candidates with signals for LLM-based prioritization.
+            Defaults to today in configured timezone.
 
-        Returns:
-            JSON object with 'calendar_events' and 'email_candidates' (with signals)
-        """
-        from datetime import datetime, time, timedelta
-        from zoneinfo import ZoneInfo
-        import re
+            Args:
+                date: Optional date in YYYY-MM-DD format. Defaults to today.
+                ctx: MCP context
 
-        cal_client = get_calendar_client_from_context(ctx)
-        gmail_client = get_gmail_client_from_context(ctx)
+            Returns:
+                JSON object with 'calendar_events' and 'email_candidates' (with signals)
+            """
+            from datetime import datetime, time, timedelta
+            from zoneinfo import ZoneInfo
+            import re
 
-        # Get config from Gmail client (all clients share same ServerConfig)
-        config = gmail_client.config
-        tz = ZoneInfo(config.timezone)
-        vip_senders = set(config.vip_senders)
+            cal_client = get_calendar_client_from_context(ctx)
+            gmail_client = get_gmail_client_from_context(ctx)
 
-        # Parse target date in configured timezone
-        if date:
-            target_date = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=tz)
-        else:
-            target_date = datetime.now(tz)
+            config = gmail_client.config
+            tz = ZoneInfo(config.timezone)
+            vip_senders = set(config.vip_senders)
 
-        # Calendar window: start/end of day in configured timezone
-        start_of_day = datetime.combine(target_date.date(), time.min, tzinfo=tz)
-        end_of_day = datetime.combine(target_date.date(), time.max, tzinfo=tz)
-
-        # Convert to RFC3339 for Google Calendar API
-        start_of_day_rfc = start_of_day.isoformat()
-        end_of_day_rfc = end_of_day.isoformat()
-
-        briefing: Dict[str, Any] = {
-            "date": target_date.strftime("%Y-%m-%d"),
-            "timezone": config.timezone,
-            "calendar_events": [],
-            "email_candidates": [],
-        }
-
-        try:
-            # 1. Fetch Calendar Events
-            events = cal_client.list_events(start_of_day_rfc, end_of_day_rfc)
-            for event in events:
-                briefing["calendar_events"].append(
-                    {
-                        "summary": event.get("summary"),
-                        "start": event.get("start", {}).get("dateTime")
-                        or event.get("start", {}).get("date"),
-                        "end": event.get("end", {}).get("dateTime")
-                        or event.get("end", {}).get("date"),
-                        "location": event.get("location"),
-                        "hangoutLink": event.get("hangoutLink"),
-                    }
-                )
-
-            # 2. Fetch Email Candidates (high recall)
-            # Base query: unread, recent, exclude noise categories
-            base_query = "is:unread newer_than:7d -category:social -category:promotions"
-
-            # Also fetch important emails (broader time window)
-            important_query = "is:unread is:important newer_than:14d"
-
-            # Collect candidates from both queries, dedupe by id
-            seen_ids: set = set()
-            candidates = []
-
-            for query in [base_query, important_query]:
-                messages = gmail_client.search_messages(query, max_results=30)
-                for m in messages:
-                    msg_id = m["id"]
-                    if msg_id in seen_ids:
-                        continue
-                    seen_ids.add(msg_id)
-
-                    full_msg = gmail_client.get_message(msg_id)
-                    if full_msg:
-                        candidates.append(full_msg)
-
-            # 3. Compute signals for each candidate
-            for email in candidates:
-                sender = str(email.from_).lower()
-                subject = email.subject.lower()
-                snippet = email.get_snippet(200).lower()
-                labels = email.gmail_labels or []
-
-                # Deterministic signals
-                signals = {
-                    "is_important": "IMPORTANT" in labels,
-                    "is_from_vip": any(vip in sender for vip in vip_senders),
-                    "has_question": "?" in subject
-                    or "?" in snippet
-                    or bool(
-                        re.search(r"\b(can you|could you|please|would you)\b", snippet)
-                    ),
-                    "mentions_deadline": bool(
-                        re.search(
-                            r"\b(eod|asap|urgent|deadline|due|by \w+day|by end of)\b",
-                            snippet,
-                        )
-                    ),
-                    "mentions_meeting": bool(
-                        re.search(
-                            r"\b(meet|meeting|schedule|calendar|invite|zoom|google meet|call)\b",
-                            snippet,
-                        )
-                    ),
-                }
-
-                briefing["email_candidates"].append(
-                    {
-                        "id": email.message_id,
-                        "thread_id": email.gmail_thread_id,
-                        "from": str(email.from_),
-                        "subject": email.subject,
-                        "date": email.date.isoformat() if email.date else None,
-                        "snippet": email.get_snippet(150),
-                        "labels": labels,
-                        "signals": signals,
-                    }
-                )
-
-            return json.dumps(briefing, indent=2)
-        except Exception as e:
-            logger.error(f"Error generating daily briefing: {e}")
-            return json.dumps({"error": str(e)}, indent=2)
-
-    @mcp.tool()
-    async def send_email(
-        to: Union[str, List[str]],
-        subject: str,
-        body: str,
-        cc: Optional[Union[str, List[str]]] = None,
-        thread_id: Optional[str] = None,
-        ctx: Context = None,  # type: ignore
-    ) -> str:
-        """Send an email using the Gmail API.
-        CRITICAL SAFETY: This tool performs a mutation (sending an email).
-        Always ensure you have confirmed the content with the user before calling this.
-
-        Args:
-            to: Recipient email address or list of addresses
-            subject: Email subject
-            body: Email body (plain text)
-            cc: Optional CC addresses
-            thread_id: Optional Gmail thread ID to reply within
-            ctx: MCP context
-
-        Returns:
-            JSON status message
-        """
-        import email.message
-        import base64
-
-        gmail_client = get_gmail_client_from_context(ctx)
-
-        try:
-            # Create MIME message
-            msg = email.message.EmailMessage()
-            msg.set_content(body)
-            msg["Subject"] = subject
-            msg["From"] = gmail_client.config.imap.username
-
-            if isinstance(to, list):
-                msg["To"] = ", ".join(to)
+            if date:
+                target_date = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=tz)
             else:
-                msg["To"] = to
+                target_date = datetime.now(tz)
 
-            if cc:
-                if isinstance(cc, list):
-                    msg["Cc"] = ", ".join(cc)
-                else:
-                    msg["Cc"] = cc
+            start_of_day = datetime.combine(target_date.date(), time.min, tzinfo=tz)
+            end_of_day = datetime.combine(target_date.date(), time.max, tzinfo=tz)
 
-            # Encode as base64url
-            raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
-            message_body = {"raw": raw}
-            if thread_id:
-                message_body["threadId"] = thread_id
+            start_of_day_rfc = start_of_day.isoformat()
+            end_of_day_rfc = end_of_day.isoformat()
 
-            result = gmail_client.send_message(message_body)
-            return json.dumps(
-                {
-                    "status": "success",
-                    "message_id": result.get("id"),
-                    "thread_id": result.get("threadId"),
-                },
-                indent=2,
-            )
-
-        except Exception as e:
-            logger.error(f"Error sending email: {e}")
-            return json.dumps({"error": str(e)}, indent=2)
-
-    @mcp.tool()
-    async def summarize_thread(
-        thread_id: str,
-        ctx: Context = None,  # type: ignore
-    ) -> str:
-        """Fetch a full conversation thread and provide a structured summary context.
-        Optimized for identifying decisions and pending actions.
-
-        Args:
-            thread_id: Gmail thread identifier
-            ctx: MCP context
-
-        Returns:
-            JSON summary of the thread
-        """
-        gmail_client = get_gmail_client_from_context(ctx)
-
-        try:
-            emails = gmail_client.get_thread(thread_id)
-            if not emails:
-                return json.dumps({"error": "Thread not found or empty"}, indent=2)
-
-            thread_summary = {
-                "thread_id": thread_id,
-                "subject": emails[0].subject,
-                "participant_count": len(set(str(e.from_) for e in emails)),
-                "message_count": len(emails),
-                "messages": [],
+            briefing: Dict[str, Any] = {
+                "date": target_date.strftime("%Y-%m-%d"),
+                "timezone": config.timezone,
+                "calendar_events": [],
+                "email_candidates": [],
             }
 
-            for e in emails:
-                thread_summary["messages"].append(
-                    {
-                        "from": str(e.from_),
-                        "date": e.date.isoformat() if e.date else None,
-                        "content": e.content.get_best_content()[
-                            :2000
-                        ],  # Truncate per message for context efficiency
+            try:
+                events = cal_client.list_events(start_of_day_rfc, end_of_day_rfc)
+                for event in events:
+                    briefing["calendar_events"].append(
+                        {
+                            "summary": event.get("summary"),
+                            "start": event.get("start", {}).get("dateTime")
+                            or event.get("start", {}).get("date"),
+                            "end": event.get("end", {}).get("dateTime")
+                            or event.get("end", {}).get("date"),
+                            "location": event.get("location"),
+                            "hangoutLink": event.get("hangoutLink"),
+                        }
+                    )
+
+                base_query = (
+                    "is:unread newer_than:7d -category:social -category:promotions"
+                )
+                important_query = "is:unread is:important newer_than:14d"
+
+                seen_ids: set = set()
+                candidates = []
+
+                for query in [base_query, important_query]:
+                    messages = gmail_client.search_messages(query, max_results=30)
+                    for m in messages:
+                        msg_id = m["id"]
+                        if msg_id in seen_ids:
+                            continue
+                        seen_ids.add(msg_id)
+
+                        full_msg = gmail_client.get_message(msg_id)
+                        if full_msg:
+                            candidates.append(full_msg)
+
+                for email in candidates:
+                    sender = str(email.from_).lower()
+                    subject = email.subject.lower()
+                    snippet = email.get_snippet(200).lower()
+                    labels = email.gmail_labels or []
+
+                    signals = {
+                        "is_important": "IMPORTANT" in labels,
+                        "is_from_vip": any(vip in sender for vip in vip_senders),
+                        "has_question": "?" in subject
+                        or "?" in snippet
+                        or bool(
+                            re.search(
+                                r"\b(can you|could you|please|would you)\b", snippet
+                            )
+                        ),
+                        "mentions_deadline": bool(
+                            re.search(
+                                r"\b(eod|asap|urgent|deadline|due|by \w+day|by end of)\b",
+                                snippet,
+                            )
+                        ),
+                        "mentions_meeting": bool(
+                            re.search(
+                                r"\b(meet|meeting|schedule|calendar|invite|zoom|google meet|call)\b",
+                                snippet,
+                            )
+                        ),
                     }
+
+                    briefing["email_candidates"].append(
+                        {
+                            "id": email.message_id,
+                            "thread_id": email.gmail_thread_id,
+                            "from": str(email.from_),
+                            "subject": email.subject,
+                            "date": email.date.isoformat() if email.date else None,
+                            "snippet": email.get_snippet(150),
+                            "labels": labels,
+                            "signals": signals,
+                        }
+                    )
+
+                return json.dumps(briefing, indent=2)
+            except Exception as e:
+                logger.error(f"Error generating daily briefing: {e}")
+                return json.dumps({"error": str(e)}, indent=2)
+
+        @mcp.tool()
+        async def send_email(
+            to: Union[str, List[str]],
+            subject: str,
+            body: str,
+            cc: Optional[Union[str, List[str]]] = None,
+            thread_id: Optional[str] = None,
+            ctx: Context = None,  # type: ignore
+        ) -> str:
+            """Send an email using the Gmail API.
+            CRITICAL SAFETY: This tool performs a mutation (sending an email).
+            Always ensure you have confirmed the content with the user before calling this.
+
+            Args:
+                to: Recipient email address or list of addresses
+                subject: Email subject
+                body: Email body (plain text)
+                cc: Optional CC addresses
+                thread_id: Optional Gmail thread ID to reply within
+                ctx: MCP context
+
+            Returns:
+                JSON status message
+            """
+            import email.message
+            import base64
+
+            gmail_client = get_gmail_client_from_context(ctx)
+
+            try:
+                msg = email.message.EmailMessage()
+                msg.set_content(body)
+                msg["Subject"] = subject
+                msg["From"] = gmail_client.config.imap.username
+
+                if isinstance(to, list):
+                    msg["To"] = ", ".join(to)
+                else:
+                    msg["To"] = to
+
+                if cc:
+                    if isinstance(cc, list):
+                        msg["Cc"] = ", ".join(cc)
+                    else:
+                        msg["Cc"] = cc
+
+                raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+                message_body = {"raw": raw}
+                if thread_id:
+                    message_body["threadId"] = thread_id
+
+                result = gmail_client.send_message(message_body)
+                return json.dumps(
+                    {
+                        "status": "success",
+                        "message_id": result.get("id"),
+                        "thread_id": result.get("threadId"),
+                    },
+                    indent=2,
                 )
 
-            return json.dumps(thread_summary, indent=2)
-        except Exception as e:
-            logger.error(f"Error summarizing thread: {e}")
-            return json.dumps({"error": str(e)}, indent=2)
+            except Exception as e:
+                logger.error(f"Error sending email: {e}")
+                return json.dumps({"error": str(e)}, indent=2)
+
+        @mcp.tool()
+        async def summarize_thread(
+            thread_id: str,
+            ctx: Context = None,  # type: ignore
+        ) -> str:
+            """Fetch a full conversation thread and provide a structured summary context.
+            Optimized for identifying decisions and pending actions.
+
+            Args:
+                thread_id: Gmail thread identifier
+                ctx: MCP context
+
+            Returns:
+                JSON summary of the thread
+            """
+            gmail_client = get_gmail_client_from_context(ctx)
+
+            try:
+                emails = gmail_client.get_thread(thread_id)
+                if not emails:
+                    return json.dumps({"error": "Thread not found or empty"}, indent=2)
+
+                thread_summary = {
+                    "thread_id": thread_id,
+                    "subject": emails[0].subject,
+                    "participant_count": len(set(str(e.from_) for e in emails)),
+                    "message_count": len(emails),
+                    "messages": [],
+                }
+
+                for e in emails:
+                    thread_summary["messages"].append(
+                        {
+                            "from": str(e.from_),
+                            "date": e.date.isoformat() if e.date else None,
+                            "content": e.content.get_best_content()[:2000],
+                        }
+                    )
+
+                return json.dumps(thread_summary, indent=2)
+            except Exception as e:
+                logger.error(f"Error summarizing thread: {e}")
+                return json.dumps({"error": str(e)}, indent=2)
+    else:
+
+        @mcp.tool()
+        async def get_daily_briefing(
+            date: Optional[str] = None,
+            ctx: Context = None,  # type: ignore
+        ) -> str:
+            """Get a combined briefing of calendar events and candidate emails for prioritization (IMAP mode).
+            Returns high-recall email candidates with signals for LLM-based prioritization.
+
+            Args:
+                date: Optional date in YYYY-MM-DD format. Defaults to today.
+                ctx: MCP context
+
+            Returns:
+                JSON object with 'calendar_events' and 'email_candidates' (with signals)
+            """
+            from datetime import datetime, time
+            from zoneinfo import ZoneInfo
+            import re
+
+            cal_client = get_calendar_client_from_context(ctx)
+            imap_client = get_client_from_context(ctx)
+
+            config = imap_client.config
+            tz = ZoneInfo(config.timezone)
+            vip_senders = set(config.vip_senders)
+
+            if date:
+                target_date = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=tz)
+            else:
+                target_date = datetime.now(tz)
+
+            start_of_day = datetime.combine(target_date.date(), time.min, tzinfo=tz)
+            end_of_day = datetime.combine(target_date.date(), time.max, tzinfo=tz)
+
+            briefing: Dict[str, Any] = {
+                "date": target_date.strftime("%Y-%m-%d"),
+                "timezone": config.timezone,
+                "calendar_events": [],
+                "email_candidates": [],
+            }
+
+            try:
+                events = cal_client.list_events(
+                    start_of_day.isoformat(), end_of_day.isoformat()
+                )
+                for event in events:
+                    briefing["calendar_events"].append(
+                        {
+                            "summary": event.get("summary"),
+                            "start": event.get("start", {}).get("dateTime")
+                            or event.get("start", {}).get("date"),
+                            "end": event.get("end", {}).get("dateTime")
+                            or event.get("end", {}).get("date"),
+                            "location": event.get("location"),
+                            "hangoutLink": event.get("hangoutLink"),
+                        }
+                    )
+
+                uids = imap_client.search({"UNSEEN": True}, folder="INBOX")
+                uids = uids[:50]
+                emails = imap_client.fetch_emails(uids, folder="INBOX")
+
+                for email in emails:
+                    sender = str(email.from_).lower()
+                    subject = (email.subject or "").lower()
+                    snippet = email.content.get_best_content()[:200].lower()
+
+                    signals = {
+                        "is_important": False,
+                        "is_from_vip": any(vip in sender for vip in vip_senders),
+                        "has_question": "?" in subject
+                        or "?" in snippet
+                        or bool(
+                            re.search(
+                                r"\b(can you|could you|please|would you)\b", snippet
+                            )
+                        ),
+                        "mentions_deadline": bool(
+                            re.search(
+                                r"\b(eod|asap|urgent|deadline|due|by \w+day|by end of)\b",
+                                snippet,
+                            )
+                        ),
+                        "mentions_meeting": bool(
+                            re.search(
+                                r"\b(meet|meeting|schedule|calendar|invite|zoom|google meet|call)\b",
+                                snippet,
+                            )
+                        ),
+                    }
+
+                    briefing["email_candidates"].append(
+                        {
+                            "id": email.message_id,
+                            "uid": email.uid,
+                            "from": str(email.from_),
+                            "subject": email.subject,
+                            "date": email.date.isoformat() if email.date else None,
+                            "snippet": email.content.get_best_content()[:150],
+                            "signals": signals,
+                        }
+                    )
+
+                return json.dumps(briefing, indent=2)
+            except Exception as e:
+                logger.error(f"Error generating daily briefing (IMAP): {e}")
+                return json.dumps({"error": str(e)}, indent=2)
+
+        @mcp.tool()
+        async def send_email(
+            to: Union[str, List[str]],
+            subject: str,
+            body: str,
+            cc: Optional[Union[str, List[str]]] = None,
+            thread_id: Optional[str] = None,
+            ctx: Context = None,  # type: ignore
+        ) -> str:
+            """Send an email using SMTP with OAuth2.
+            CRITICAL SAFETY: This tool performs a mutation (sending an email).
+            Always ensure you have confirmed the content with the user before calling this.
+
+            Args:
+                to: Recipient email address or list of addresses
+                subject: Email subject
+                body: Email body (plain text)
+                cc: Optional CC addresses
+                thread_id: Optional thread UID (ignored in IMAP mode, use reply tools instead)
+                ctx: MCP context
+
+            Returns:
+                JSON status message
+            """
+            import email.message
+
+            smtp_client = get_smtp_client_from_context(ctx)
+
+            try:
+                msg = email.message.EmailMessage()
+                msg.set_content(body)
+                msg["Subject"] = subject
+                msg["From"] = smtp_client.config.imap.username
+
+                if isinstance(to, list):
+                    msg["To"] = ", ".join(to)
+                else:
+                    msg["To"] = to
+
+                if cc:
+                    if isinstance(cc, list):
+                        msg["Cc"] = ", ".join(cc)
+                    else:
+                        msg["Cc"] = cc
+
+                smtp_client.send_message(msg)
+                return json.dumps(
+                    {
+                        "status": "success",
+                        "message": f"Email sent to {to}",
+                    },
+                    indent=2,
+                )
+
+            except Exception as e:
+                logger.error(f"Error sending email (SMTP): {e}")
+                return json.dumps({"error": str(e)}, indent=2)
+
+        @mcp.tool()
+        async def summarize_thread(
+            thread_id: str,
+            ctx: Context = None,  # type: ignore
+        ) -> str:
+            """Fetch a full conversation thread and provide a structured summary context (IMAP mode).
+            Optimized for identifying decisions and pending actions.
+
+            Args:
+                thread_id: Message UID of any message in the thread
+                ctx: MCP context
+
+            Returns:
+                JSON summary of the thread
+            """
+            imap_client = get_client_from_context(ctx)
+
+            try:
+                uid = int(thread_id)
+                emails = imap_client.fetch_thread(uid)
+                if not emails:
+                    return json.dumps({"error": "Thread not found or empty"}, indent=2)
+
+                thread_summary = {
+                    "thread_id": thread_id,
+                    "subject": emails[0].subject,
+                    "participant_count": len(set(str(e.from_) for e in emails)),
+                    "message_count": len(emails),
+                    "messages": [],
+                }
+
+                for e in emails:
+                    thread_summary["messages"].append(
+                        {
+                            "from": str(e.from_),
+                            "date": e.date.isoformat() if e.date else None,
+                            "content": e.content.get_best_content()[:2000],
+                        }
+                    )
+
+                return json.dumps(thread_summary, indent=2)
+            except ValueError:
+                return json.dumps(
+                    {"error": f"Invalid thread_id '{thread_id}'. Use numeric UID."},
+                    indent=2,
+                )
+            except Exception as e:
+                logger.error(f"Error summarizing thread (IMAP): {e}")
+                return json.dumps({"error": str(e)}, indent=2)
 
     @mcp.tool()
     async def suggest_reschedule(

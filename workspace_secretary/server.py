@@ -14,10 +14,11 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 
-from workspace_secretary.config import ServerConfig, load_config
+from workspace_secretary.config import ServerConfig, load_config, OAuthMode
 from workspace_secretary.imap_client import ImapClient
 from workspace_secretary.calendar_client import CalendarClient
 from workspace_secretary.gmail_client import GmailClient
+from workspace_secretary.smtp_client import SMTPClient
 from workspace_secretary.resources import register_resources
 from workspace_secretary.tools import register_tools
 from workspace_secretary.mcp_protocol import extend_server
@@ -51,51 +52,45 @@ class StaticTokenVerifier:
 
 @asynccontextmanager
 async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict]:
-    """Server lifespan manager to handle IMAP client lifecycle.
-
-    Args:
-        server: MCP server instance
-
-    Yields:
-        Context dictionary containing IMAP client
-    """
-    # Access the config that was set in create_server
-    # The config is stored in the server's state
     config = getattr(server, "_config", None)
     if not config:
-        # This is a fallback in case we can't find the config
         config = load_config()
 
     if not isinstance(config, ServerConfig):
         raise TypeError("Invalid server configuration")
 
+    oauth_mode = config.oauth_mode
     imap_client = ImapClient(config.imap, config.allowed_folders)
     calendar_client = CalendarClient(config)
-    gmail_client = GmailClient(config)
+    gmail_client: Optional[GmailClient] = None
+    smtp_client: Optional[SMTPClient] = None
 
     try:
-        # Connect to IMAP server
+        logger.info(f"Starting server in {oauth_mode.value.upper()} mode...")
         logger.info("Connecting to IMAP server...")
         imap_client.connect()
 
-        # Connect to Calendar if enabled
         if config.calendar and config.calendar.enabled:
             logger.info("Connecting to Google Calendar...")
             calendar_client.connect()
 
-        # Connect to Gmail API if it's Gmail
-        if config.imap.is_gmail and config.imap.oauth2:
-            logger.info("Connecting to Gmail REST API...")
-            gmail_client.connect()
+        if oauth_mode == OAuthMode.API:
+            if config.imap.is_gmail and config.imap.oauth2:
+                logger.info("Connecting to Gmail REST API...")
+                gmail_client = GmailClient(config)
+                gmail_client.connect()
+        else:
+            logger.info("IMAP mode: Gmail REST API disabled, using SMTP for sending")
+            smtp_client = SMTPClient(config)
 
-        # Yield the context with the clients
         yield {
             "imap_client": imap_client,
             "calendar_client": calendar_client,
             "gmail_client": gmail_client,
+            "smtp_client": smtp_client,
+            "oauth_mode": oauth_mode,
         }
     finally:
-        # Disconnect from IMAP server
         logger.info("Disconnecting from IMAP server...")
         imap_client.disconnect()
 
@@ -171,7 +166,7 @@ def create_server(
 
     # Register resources and tools
     register_resources(server, imap_client)
-    register_tools(server, imap_client)
+    register_tools(server, imap_client, config.oauth_mode)
 
     # Add server status tool
     @server.tool()

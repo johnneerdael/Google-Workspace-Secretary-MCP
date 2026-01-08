@@ -1,14 +1,65 @@
 """SMTP client implementation for sending emails."""
 
+import base64
 import email.utils
 import logging
+import smtplib
 from datetime import datetime
 from email.message import EmailMessage
 from typing import List, Optional
 
+from workspace_secretary.config import ServerConfig
 from workspace_secretary.models import Email, EmailAddress
+from workspace_secretary.oauth2 import get_access_token
 
 logger = logging.getLogger(__name__)
+
+GMAIL_SMTP_HOST = "smtp.gmail.com"
+GMAIL_SMTP_PORT = 587
+
+
+class SMTPClient:
+    def __init__(self, config: ServerConfig):
+        self.config = config
+        self._smtp: Optional[smtplib.SMTP] = None
+
+    def _get_xoauth2_string(self, username: str, access_token: str) -> str:
+        auth_string = f"user={username}\1auth=Bearer {access_token}\1\1"
+        return auth_string
+
+    def send_message(self, message: EmailMessage) -> bool:
+        if not self.config.imap.oauth2:
+            raise ValueError("OAuth2 configuration required for SMTP")
+
+        access_token, _ = get_access_token(self.config.imap.oauth2)
+        username = self.config.imap.username
+
+        try:
+            smtp = smtplib.SMTP(GMAIL_SMTP_HOST, GMAIL_SMTP_PORT)
+            smtp.ehlo()
+            smtp.starttls()
+            smtp.ehlo()
+
+            xoauth2_string = self._get_xoauth2_string(username, access_token)
+            xoauth2_b64 = base64.b64encode(xoauth2_string.encode()).decode()
+
+            code, response = smtp.docmd("AUTH", f"XOAUTH2 {xoauth2_b64}")
+            if code != 235:
+                logger.error(f"SMTP AUTH failed: {code} {response}")
+                raise smtplib.SMTPAuthenticationError(code, response)
+
+            smtp.send_message(message)
+            smtp.quit()
+
+            logger.info(f"Email sent successfully to {message['To']}")
+            return True
+
+        except smtplib.SMTPException as e:
+            logger.error(f"SMTP error sending email: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Error sending email: {e}")
+            raise
 
 
 def create_reply_mime(

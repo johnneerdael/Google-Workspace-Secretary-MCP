@@ -3,6 +3,7 @@
 import logging
 import os
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -11,6 +12,39 @@ import yaml  # type: ignore
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
+
+
+class OAuthMode(Enum):
+    """OAuth mode determining which scopes and backends are used.
+
+    API mode: Uses Gmail REST API and Calendar API (requires full API scopes)
+    IMAP mode: Uses IMAP/SMTP protocols and Calendar API (works with Thunderbird credentials)
+    """
+
+    API = "api"
+    IMAP = "imap"
+
+    @classmethod
+    def from_string(cls, value: str) -> "OAuthMode":
+        """Parse OAuthMode from string value.
+
+        Args:
+            value: String value ('api' or 'imap', case-insensitive)
+
+        Returns:
+            OAuthMode enum value
+
+        Raises:
+            ValueError: If value is not a valid mode
+        """
+        normalized = value.lower().strip()
+        if normalized == "api":
+            return cls.API
+        elif normalized == "imap":
+            return cls.IMAP
+        else:
+            raise ValueError(f"Invalid OAUTH_MODE '{value}'. Must be 'api' or 'imap'.")
+
 
 # Load environment variables from .env file if it exists
 load_dotenv()
@@ -185,6 +219,7 @@ class ServerConfig:
     imap: ImapConfig
     timezone: str
     working_hours: WorkingHoursConfig
+    oauth_mode: OAuthMode
     allowed_folders: Optional[List[str]] = None
     calendar: Optional[CalendarConfig] = None
     vip_senders: List[str] = field(default_factory=list)
@@ -220,10 +255,19 @@ class ServerConfig:
                 "Please specify start and end times (e.g., start: '09:00', end: '17:00')"
             )
 
+        oauth_mode_str = os.environ.get("OAUTH_MODE") or data.get("oauth_mode")
+        if not oauth_mode_str:
+            raise ValueError(
+                "Missing required 'OAUTH_MODE' environment variable or 'oauth_mode' in config. "
+                "Must be 'api' (Gmail API) or 'imap' (IMAP/SMTP with Thunderbird credentials)."
+            )
+        oauth_mode = OAuthMode.from_string(oauth_mode_str)
+
         return cls(
             imap=ImapConfig.from_dict(data.get("imap", {})),
             timezone=data["timezone"],
             working_hours=WorkingHoursConfig.from_dict(data["working_hours"]),
+            oauth_mode=oauth_mode,
             allowed_folders=data.get("allowed_folders"),
             calendar=CalendarConfig.from_dict(data.get("calendar", {})),
             vip_senders=data.get("vip_senders", []),

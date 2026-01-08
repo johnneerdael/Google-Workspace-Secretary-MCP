@@ -13,6 +13,7 @@ import subprocess
 import time
 import logging
 import tempfile
+import sys
 from pathlib import Path
 
 # Configure logging
@@ -24,41 +25,27 @@ pytestmark = pytest.mark.integration
 
 # Define paths and variables
 PROJECT_ROOT = Path.cwd()
-WRAPPER_SCRIPT = PROJECT_ROOT / "scripts" / "run_workspace_secretary_server.sh"
+SERVER_MODULE = "imap_mcp.server"
 
 
 class TestImapMcpServerConfig:
     """Test the IMAP MCP server configuration and basic CLI functionality."""
 
-    def test_wrapper_script_exists(self):
-        """Test that the IMAP MCP server wrapper script exists and is executable."""
-        assert WRAPPER_SCRIPT.exists(), f"Server script not found: {WRAPPER_SCRIPT}"
-        assert os.access(WRAPPER_SCRIPT, os.X_OK), (
-            f"Server script not executable: {WRAPPER_SCRIPT}"
-        )
-
-        # Verify the script has expected content
-        with open(WRAPPER_SCRIPT, "r") as f:
-            script_content = f.read()
-
-        # Check for key indicators this is the correct script
-        expected_indicators = ["Starting IMAP MCP Server", "PYTHONPATH"]
-        for indicator in expected_indicators:
-            assert indicator in script_content, (
-                f"Expected content '{indicator}' not found in script"
-            )
-
-    def test_wrapper_script_help(self):
-        """Test that the wrapper script responds to --help."""
-        # Run the script with --help
+    def test_server_module_runnable(self):
+        """Test that the IMAP MCP server module can be invoked with --help."""
+        # Use sys.executable to ensure we use the same python interpreter
         result = subprocess.run(
-            [str(WRAPPER_SCRIPT), "--help"], capture_output=True, text=True
+            [sys.executable, "-m", SERVER_MODULE, "--help"],
+            capture_output=True,
+            text=True,
+            cwd=PROJECT_ROOT,
         )
 
         # Verify it exits successfully and contains expected help output
         assert result.returncode == 0, (
-            f"Script --help failed with code {result.returncode}"
+            f"Server module --help failed with code {result.returncode}\nStderr: {result.stderr}"
         )
+        # ArgumentParser help usually goes to stdout
         assert "usage:" in result.stdout or "usage:" in result.stderr, (
             "Help output not found"
         )

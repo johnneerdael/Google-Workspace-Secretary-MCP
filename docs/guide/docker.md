@@ -1,60 +1,80 @@
-# Google Workspace Secretary MCP
+# Docker Deployment
 
-Google Workspace Secretary MCP is a Model Context Protocol (MCP) server that provides tools for interacting with Google Workspace (Gmail and Calendar) as well as any IMAP/SMTP compatible email service.
+This guide covers how to deploy and run the Google Workspace Secretary server using Docker. This is the recommended way to run the service for long-term usage.
 
-## Core Identity
-This tool is designed to act as an AI-powered secretary. It doesn't just read emails; it understands them, manages your calendar, and helps you respond intelligently.
+## Prerequisites
+- Docker and Docker Compose installed on your system.
+- A `config.yaml` file prepared (see [Configuration](configuration.md)).
 
-## Docker Usage (Primary Method)
+## Quick Start
 
-The easiest way to run Google Workspace Secretary MCP is via Docker.
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/johnneerdael/Google-Workspace-Secretary-MCP.git
+    cd Google-Workspace-Secretary-MCP
+    ```
 
-### Prerequisites
-- Docker and Docker Compose installed.
-- Google Cloud Project with Gmail and Calendar APIs enabled (if using Google Workspace).
-- `credentials.json` from your Google Cloud Project.
+2.  **Configure:**
+    Copy `config.sample.yaml` to `config.yaml` and fill in your details.
+    ```bash
+    cp config.sample.yaml config.yaml
+    ```
 
-### Setup
+3.  **Start Service:**
+    ```bash
+    docker-compose up -d --build
+    ```
+    This starts the server in background mode. The service is configured to restart automatically (`restart: always`).
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/johnneerdael/Google-Workspace-Secretary-MCP.git
-   cd Google-Workspace-Secretary-MCP
-   ```
+4.  **Verify:**
+    ```bash
+    docker-compose logs -f
+    ```
 
-2. **Configure:**
-   Copy `config.sample.yaml` to `config.yaml` and fill in your details.
-   ```bash
-   cp config.sample.yaml config.yaml
-   ```
+## Persistence
 
-3. **Run with Docker Compose:**
-   ```bash
-   docker-compose up -d
-   ```
+The Docker container uses volumes to persist critical data. You don't need to rebuild the container to change configuration.
 
-4. **Authentication:**
-   If using OAuth2, you need to authorize the application:
-   ```bash
-   docker exec -it workspace-secretary uv run python -m workspace_secretary.auth_setup --config /app/config/config.yaml
-   ```
+-   `./config.yaml` -> `/app/config/config.yaml`: Configuration file.
+-   `./tasks.json` -> `/app/tasks.json`: Persistent tasks state (if using Task features).
+-   `./.token_cache.json` -> `/app/.token_cache.json`: OAuth tokens are cached here automatically.
 
-## Agent and Subagent Workflows
+## Authentication in Docker
 
-Google Workspace Secretary MCP is built to support advanced agentic workflows.
+### The OAuth Redirect Issue
+When running in Docker, `localhost` inside the container is different from your machine's `localhost`. The standard OAuth flow that opens a browser window won't work directly because the container can't launch your browser.
 
-### Task Handling
-The server provides atomic tools that can be composed by an LLM to handle complex tasks:
-- `list_unread_emails`: Discover new work.
-- `get_email_details`: Understand context.
-- `check_calendar`: Verify availability.
-- `draft_reply` / `send_email`: Take action.
+To authenticate:
 
-### Subagents
-You can deploy specialized "subagents" using this MCP server:
-- **Triage Agent:** Periodically checks for new emails and categorizes them.
-- **Scheduling Agent:** Specifically handles meeting invites, checking calendar availability and drafting responses.
-- **Knowledge Agent:** Searches past emails to answer questions or provide context for new tasks.
+1.  **Start Container**: Ensure the container is running (`docker-compose up -d`).
+2.  **Run Auth Script Inside Container**:
+    Execute the auth setup script *inside* the running container context:
+    ```bash
+    docker exec -it workspace-secretary uv run python -m workspace_secretary.auth_setup --config /app/config/config.yaml
+    ```
+3.  **Follow Instructions**:
+    - The script will print a URL. Copy it to your browser.
+    - Login to your Google account and approve access.
+    - The browser will redirect to `localhost:8080`.
+    - **Crucial**: We have mapped port 8080 of the container to port 8080 of your host. The container will capture this redirect and save the token to `config.yaml`.
 
-## GitHub Repository
-[https://github.com/johnneerdael/Google-Workspace-Secretary-MCP](https://github.com/johnneerdael/Google-Workspace-Secretary-MCP)
+4.  **Restart**:
+    If the server was in a crash loop waiting for tokens, restart it now:
+    ```bash
+    docker-compose restart
+    ```
+
+## Environment Variables
+
+You can override defaults in `docker-compose.yml` or using a `.env` file:
+
+-   `IMAP_MCP_TOKEN`: Set a fixed Bearer token for MCP client authentication.
+    -   *Default*: Generated randomly on startup (check logs to see it).
+-   `LOG_LEVEL`: Set logging verbosity (e.g., `DEBUG`, `INFO`).
+
+## Connecting Clients
+
+Once running, the server exposes a **Streamable HTTP** endpoint at:
+`http://localhost:8000/mcp`
+
+See the [Client Setup Guide](clients.md) for instructions on connecting Claude Desktop, VS Code, and other tools.

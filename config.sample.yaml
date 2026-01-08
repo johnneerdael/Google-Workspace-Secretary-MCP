@@ -1,6 +1,13 @@
 # Google Workspace Secretary MCP Configuration
 # Complete example with all available options
 
+# REQUIRED: OAuth Mode
+# Controls which APIs are used for email operations:
+# - "api" (default): Uses Gmail REST API. Requires your own GCP OAuth credentials.
+# - "imap": Uses IMAP/SMTP. Works with third-party OAuth credentials (Thunderbird, GNOME).
+# Calendar features work in both modes. Can also be set via OAUTH_MODE env var.
+oauth_mode: api
+
 # REQUIRED: IMAP/Gmail Configuration
 imap:
   host: imap.gmail.com

@@ -115,6 +115,13 @@ The AI:
 3. Parses and presents the total
 :::
 
+## What's New in v1.1.0
+
+- ✅ **Dual OAuth Mode** - `oauth_mode: api` (Gmail REST) or `oauth_mode: imap` (IMAP/SMTP)
+- ✅ **Third-party OAuth Support** - Use Thunderbird/GNOME credentials with `imap` mode
+- ✅ **SMTP with XOAUTH2** - Send emails via authenticated SMTP in IMAP mode
+- ✅ **Calendar works in both modes** - Google Calendar API is independent of email backend
+
 ## What's New in v0.2.0
 
 - ✅ **Timezone-aware scheduling** - All calendar operations use your configured timezone

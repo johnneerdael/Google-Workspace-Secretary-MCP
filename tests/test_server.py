@@ -9,7 +9,12 @@ import logging
 from mcp.server.fastmcp import FastMCP
 
 from workspace_secretary.server import create_server, server_lifespan, main
-from workspace_secretary.config import ServerConfig, ImapConfig
+from workspace_secretary.config import (
+    ServerConfig,
+    ImapConfig,
+    WorkingHoursConfig,
+    OAuthMode,
+)
 
 
 class TestServer:
@@ -18,6 +23,9 @@ class TestServer:
     def test_create_server(self, monkeypatch):
         """Test server creation with default configuration."""
         # Mock the config loading
+        working_hours = WorkingHoursConfig(
+            start="09:00", end="17:00", workdays=[1, 2, 3, 4, 5]
+        )
         mock_config = ServerConfig(
             imap=ImapConfig(
                 host="imap.example.com",
@@ -26,10 +34,16 @@ class TestServer:
                 password="password",
                 use_ssl=True,
             ),
+            timezone="America/Los_Angeles",
+            working_hours=working_hours,
+            vip_senders=[],
             allowed_folders=["INBOX", "Sent"],
+            oauth_mode=OAuthMode.API,
         )
 
-        with mock.patch("workspace_secretary.server.load_config", return_value=mock_config):
+        with mock.patch(
+            "workspace_secretary.server.load_config", return_value=mock_config
+        ):
             # Create the server
             server = create_server()
 
@@ -54,9 +68,28 @@ class TestServer:
 
     def test_create_server_with_debug(self):
         """Test server creation with debug mode enabled."""
-        with mock.patch("workspace_secretary.server.logger") as mock_logger:
-            create_server(debug=True)
-            mock_logger.setLevel.assert_called_with(logging.DEBUG)
+        working_hours = WorkingHoursConfig(
+            start="09:00", end="17:00", workdays=[1, 2, 3, 4, 5]
+        )
+        mock_config = ServerConfig(
+            imap=ImapConfig(
+                host="imap.example.com",
+                port=993,
+                username="test@example.com",
+                password="password",
+                use_ssl=True,
+            ),
+            timezone="America/Los_Angeles",
+            working_hours=working_hours,
+            vip_senders=[],
+            oauth_mode=OAuthMode.API,
+        )
+        with mock.patch(
+            "workspace_secretary.server.load_config", return_value=mock_config
+        ):
+            with mock.patch("workspace_secretary.server.logger") as mock_logger:
+                create_server(debug=True)
+                mock_logger.setLevel.assert_called_with(logging.DEBUG)
 
     def test_create_server_with_config_path(self):
         """Test server creation with a specific config path."""
@@ -71,6 +104,9 @@ class TestServer:
         """Test server lifespan context manager."""
         # Create mock server with config
         mock_server = mock.MagicMock()
+        working_hours = WorkingHoursConfig(
+            start="09:00", end="17:00", workdays=[1, 2, 3, 4, 5]
+        )
         mock_config = ServerConfig(
             imap=ImapConfig(
                 host="imap.example.com",
@@ -78,7 +114,11 @@ class TestServer:
                 username="test@example.com",
                 password="password",
                 use_ssl=True,
-            )
+            ),
+            timezone="America/Los_Angeles",
+            working_hours=working_hours,
+            vip_senders=[],
+            oauth_mode=OAuthMode.IMAP,
         )
         mock_server._config = mock_config
 
@@ -112,6 +152,9 @@ class TestServer:
         mock_server = mock.MagicMock()
         mock_server._config = None
 
+        working_hours = WorkingHoursConfig(
+            start="09:00", end="17:00", workdays=[1, 2, 3, 4, 5]
+        )
         mock_config = ServerConfig(
             imap=ImapConfig(
                 host="imap.example.com",
@@ -119,7 +162,11 @@ class TestServer:
                 username="test@example.com",
                 password="password",
                 use_ssl=True,
-            )
+            ),
+            timezone="America/Los_Angeles",
+            working_hours=working_hours,
+            vip_senders=[],
+            oauth_mode=OAuthMode.IMAP,
         )
 
         # Mock config loading and ImapClient
@@ -148,6 +195,9 @@ class TestServer:
     def test_server_status_tool(self):
         """Test the server_status tool."""
         # Mock the config
+        working_hours = WorkingHoursConfig(
+            start="09:00", end="17:00", workdays=[1, 2, 3, 4, 5]
+        )
         mock_config = ServerConfig(
             imap=ImapConfig(
                 host="imap.example.com",
@@ -156,7 +206,11 @@ class TestServer:
                 password="password",
                 use_ssl=True,
             ),
+            timezone="America/Los_Angeles",
+            working_hours=working_hours,
+            vip_senders=[],
             allowed_folders=["INBOX", "Sent"],
+            oauth_mode=OAuthMode.API,
         )
 
         # In the actual server implementation, server_status is defined as an inner function
@@ -177,7 +231,9 @@ class TestServer:
 
         try:
             # Apply our mock
-            with mock.patch("workspace_secretary.server.load_config", return_value=mock_config):
+            with mock.patch(
+                "workspace_secretary.server.load_config", return_value=mock_config
+            ):
                 with mock.patch.object(FastMCP, "tool", mock_tool):
                     # Create the server, which should register our tool
                     server = create_server()
@@ -222,7 +278,9 @@ class TestServer:
         test_args = ["--config", "test_config.yaml", "--debug", "--dev"]
 
         with mock.patch("sys.argv", ["server.py"] + test_args):
-            with mock.patch("workspace_secretary.server.create_server") as mock_create_server:
+            with mock.patch(
+                "workspace_secretary.server.create_server"
+            ) as mock_create_server:
                 with mock.patch(
                     "workspace_secretary.server.argparse.ArgumentParser.parse_args"
                 ) as mock_parse_args:
@@ -268,7 +326,9 @@ class TestServer:
         monkeypatch.setenv("IMAP_MCP_CONFIG", "env_config.yaml")
 
         with mock.patch("sys.argv", ["server.py"]):
-            with mock.patch("workspace_secretary.server.create_server") as mock_create_server:
+            with mock.patch(
+                "workspace_secretary.server.create_server"
+            ) as mock_create_server:
                 with mock.patch(
                     "workspace_secretary.server.argparse.ArgumentParser.parse_args"
                 ) as mock_parse_args:

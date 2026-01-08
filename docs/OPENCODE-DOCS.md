@@ -23,14 +23,15 @@ Google-Workspace-Secretary-MCP/
 ├── AGENTS.md                          # Hard rules (HITL, confidence gating, etc.)
 ├── .opencode/
 │   ├── agent/
-│   │   ├── secretary.md               # Primary orchestrator (mode: primary)
-│   │   ├── briefer.md                 # Morning briefing specialist
-│   │   ├── triage.md                  # Email prioritization
-│   │   ├── bulk-cleaner.md            # Bulk cleanup with confidence gating
-│   │   ├── email-drafter.md           # Draft specialist (never sends)
-│   │   ├── scheduler.md               # Calendar & NL reschedule
-│   │   ├── email-curator.md           # Routine maintenance
-│   │   └── document-clerk.md          # Attachment intelligence
+│   │   ├── secretary.md               # Primary orchestrator with mutations (mode: primary)
+│   │   ├── secretary-plan.md          # Read-only analysis mode (mode: primary)
+│   │   ├── briefer.md                 # Morning briefing specialist (mode: subagent)
+│   │   ├── triage.md                  # Email prioritization (mode: subagent)
+│   │   ├── bulk-cleaner.md            # Bulk cleanup proposals (mode: subagent)
+│   │   ├── email-drafter.md           # Draft specialist (mode: subagent)
+│   │   ├── scheduler.md               # Calendar analysis (mode: subagent)
+│   │   ├── email-curator.md           # Maintenance proposals (mode: subagent)
+│   │   └── document-clerk.md          # Attachment intelligence (mode: subagent)
 │   └── command/
 │       ├── morning.md                 # /morning briefing command
 │       ├── clean-inbox.md             # /clean-inbox bulk cleanup
@@ -38,6 +39,12 @@ Google-Workspace-Secretary-MCP/
 │       ├── setup-folders.md           # /setup-folders label init
 │       └── vip.md                     # /vip email filter
 ```
+
+### Two Primary Agents (Tab to Switch)
+- **secretary**: Full execution capabilities (mutation tools enabled)
+- **secretary-plan**: Read-only analysis mode (mutation tools disabled)
+
+Use Tab key to cycle between them. Use **secretary-plan** for safe analysis, switch to **secretary** when ready to execute.
 
 ---
 
@@ -136,7 +143,13 @@ All scheduling operations respect `config.yaml` settings:
 
 ## Primary Agent: secretary
 
-**File**: `.opencode/agent/secretary.md` (already exists)
+**File**: `.opencode/agent/secretary.md` (exec mode) and `.opencode/agent/secretary-plan.md` (read-only mode)
+
+### Two Modes
+1. **secretary** - Full execution capabilities (mutation tools enabled)
+2. **secretary-plan** - Analysis only (mutation tools disabled)
+
+Use **Tab** key to cycle between them.
 
 ### Role
 Primary orchestrator for all Gmail + Google Calendar workflows. Delegates to specialized subagents.
@@ -156,7 +169,26 @@ permission:
 
 ### Tool Access
 - **Read-only**: `get_daily_briefing`, `gmail_search`, `gmail_get_thread`, `summarize_thread`, `get_calendar_availability`, `list_calendar_events`
-- **Mutations** (require `ask` permission): `send_email`, `modify_gmail_labels`, `process_email`, `mark_as_read`, `create_calendar_event`
+- **Mutations** (enabled in `tools:`, HITL enforced via prompt): `send_email`, `modify_gmail_labels`, `process_email`, `mark_as_read`, `create_calendar_event`
+
+### Important: OpenCode Tool Permission Format
+In OpenCode agent frontmatter, **`tools:` only accepts boolean values** (`true` or `false`):
+```yaml
+tools:
+  gmail_search: true
+  send_email: true  # Enabled (not "ask")
+```
+
+The string value `"ask"` is **NOT valid** for MCP tools. It only works for OpenCode's built-in tools (`edit`, `bash`, `webfetch`) under the `permission:` section:
+```yaml
+permission:
+  edit: ask
+  bash: ask
+```
+
+For MCP mutation tools (like Gmail/Calendar operations), HITL is enforced via:
+1. **Prompt instructions** (AGENTS.md rules)
+2. **Architecture**: Subagents have mutation tools set to `false`, only primary agent can execute
 
 ### Usage
 The `secretary` agent is invoked automatically when you use OpenCode chat or run commands like `/morning`, `/clean-inbox`.
@@ -198,7 +230,9 @@ Good morning! Here's your briefing for Wednesday, Jan 8:
 ### @bulk-cleaner - Confidence-Gated Cleanup
 **File**: `.opencode/agent/bulk-cleaner.md`
 
-**Purpose**: Bulk process low-priority emails with confidence-based approval workflows per AGENTS.md rules.
+**Purpose**: Analyze low-priority emails and propose batch cleanup actions. **Does not execute mutations** (proposals only).
+
+**Architecture Note**: This subagent has mutation tools set to `false`. It identifies cleanup candidates and returns proposals to the primary **secretary** agent for execution.
 
 **Confidence Detection Patterns**:
 
@@ -275,7 +309,9 @@ User: "Draft a reply to Sarah's email"
 ### @scheduler - Calendar & NL Reschedule
 **File**: `.opencode/agent/scheduler.md`
 
-**Purpose**: Calendar management, meeting coordination, natural language rescheduling.
+**Purpose**: Calendar analysis, meeting coordination, natural language rescheduling. **Does not execute mutations** (proposals only).
+
+**Architecture Note**: This subagent has mutation tools (`create_calendar_event`, `process_meeting_invite`) set to `false`. It analyzes calendar and returns proposals to the primary **secretary** agent for execution.
 
 **Natural Language Reschedule Workflow**:
 
@@ -307,14 +343,16 @@ If proposed time is outside working hours:
 ### @email-curator - Routine Maintenance
 **File**: `.opencode/agent/email-curator.md`
 
-**Purpose**: Routine inbox maintenance and organization.
+**Purpose**: Identify routine inbox maintenance candidates and propose organization. **Does not execute mutations** (proposals only).
+
+**Architecture Note**: This subagent has mutation tools set to `false`. It identifies maintenance candidates and returns proposals to the primary **secretary** agent for execution.
 
 **Targets**:
 - Internal CC-only emails
 - Automated/bulk mail (Jira, GitHub, CI/CD)
 - Old processed threads
 
-**Attachment Screening**: Before archiving newsletters, checks for important attachments (invoices, reports) and alerts user.
+**Attachment Screening**: Before proposing archival of newsletters, checks for important attachments (invoices, reports) and alerts user.
 
 ---
 
