@@ -49,120 +49,23 @@ jobs:
 
       - name: Build VitePress
         working-directory: docs
-        env:
-          # Dynamic base path based on deployment target
-          # Main branch -> /Google-Workspace-Secretary-MCP/latest/
-          # Tag -> /Google-Workspace-Secretary-MCP/v1.2.3/
-          VITEPRESS_BASE: /Google-Workspace-Secretary-MCP/${{ steps.version.outputs.version }}/
         run: npm run build
 
-      - name: Checkout gh-pages branch
-        run: |
-          # Create gh-pages if it doesn't exist
-          git fetch origin gh-pages || git checkout --orphan gh-pages
-          git checkout gh-pages || git checkout --orphan gh-pages
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
 
-      - name: Configure Git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: 'docs/.vitepress/dist'
 
-      - name: Deploy version to gh-pages
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          # Remove old version if exists
-          rm -rf "$VERSION"
-          
-          # Copy built site to version directory
-          mkdir -p "$VERSION"
-          cp -r docs/.vitepress/dist/* "$VERSION/"
-          
-          # Add to git
-          git add "$VERSION"
-
-      - name: Update versions.json
-        run: |
-          # Get all stable version tags (v*.*.*)
-          STABLE_TAGS=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V -r)
-          
-          # Build versions.json
-          cat > versions.json << 'EOF'
-          {
-            "latest": {
-              "version": "latest",
-              "label": "Latest (main)",
-              "path": "/Google-Workspace-Secretary-MCP/latest/"
-            },
-            "versions": [
-          EOF
-          
-          FIRST=true
-          for TAG in $STABLE_TAGS; do
-            if [ "$FIRST" = false ]; then
-              echo "," >> versions.json
-            fi
-            FIRST=false
-            cat >> versions.json << EOF
-              {
-                "version": "$TAG",
-                "label": "$TAG",
-                "path": "/Google-Workspace-Secretary-MCP/$TAG/"
-              }
-          EOF
-          done
-          
-          cat >> versions.json << 'EOF'
-            ]
-          }
-          EOF
-          
-          git add versions.json
-
-      - name: Create root redirect
-        run: |
-          cat > index.html << 'EOF'
-          <!DOCTYPE html>
-          <html lang="en">
-          <head>
-            <meta charset="UTF-8">
-            <meta http-equiv="refresh" content="0; url=/Google-Workspace-Secretary-MCP/latest/">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Redirecting...</title>
-            <script>
-              window.location.href = '/Google-Workspace-Secretary-MCP/latest/';
-            </script>
-          </head>
-          <body>
-            <p>Redirecting to <a href="/Google-Workspace-Secretary-MCP/latest/">documentation</a>...</p>
-          </body>
-          </html>
-          EOF
-          
-          git add index.html
-
-      - name: Commit and push
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          IS_TAG: ${{ steps.version.outputs.is_tag }}
-        run: |
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            if [ "$IS_TAG" = "true" ]; then
-              git commit -m "docs: deploy version $VERSION"
-            else
-              git commit -m "docs: update latest documentation"
-            fi
-            git push origin gh-pages --force
-          fi
-
-      - name: Summary
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          echo "✅ Documentation deployed successfully!" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Version**: \`$VERSION\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**URL**: https://${{ github.repository_owner }}.github.io/Google-Workspace-Secretary-MCP/$VERSION/" >> $GITHUB_STEP_SUMMARY
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
