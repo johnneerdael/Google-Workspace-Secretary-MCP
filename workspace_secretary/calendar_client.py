@@ -17,7 +17,7 @@ class CalendarClient:
     """Client for interacting with Google Calendar API."""
 
     def __init__(self, config: ServerConfig):
-        self.config = config
+        self.config: ServerConfig = config
         self.service = None
         self._creds = None
 
@@ -82,15 +82,28 @@ class CalendarClient:
         return events_result.get("items", [])
 
     def create_event(
-        self, event_data: Dict[str, Any], calendar_id: str = "primary"
+        self,
+        event_data: Dict[str, Any],
+        calendar_id: str = "primary",
+        conference_data_version: int = 0,
     ) -> Dict[str, Any]:
-        """Create a new calendar event."""
+        """Create a new calendar event.
+
+        Args:
+            event_data: Event details
+            calendar_id: Calendar ID
+            conference_data_version: Version for conference data (set to 1 to enable Meet)
+        """
         if not self.service:
             self.connect()
 
         event = (
             self.service.events()
-            .insert(calendarId=calendar_id, body=event_data)
+            .insert(
+                calendarId=calendar_id,
+                body=event_data,
+                conferenceDataVersion=conference_data_version,
+            )
             .execute()
         )
 

@@ -428,7 +428,9 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
                 and attachment.attachment_id
             ):
                 try:
-                    attachment.content = client.get_attachment_data(
+                    # Cast to Any to satisfy static analysis
+                    client_any: Any = client
+                    attachment.content = client_any.get_attachment_data(
                         email_obj.message_id, attachment.attachment_id
                     )
                 except Exception as e:
@@ -484,56 +486,6 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
 
         except Exception as e:
             logger.error(f"Error getting attachment content: {e}")
-            return f"Error: {e}"
-
-    # Flag email
-    @mcp.tool()
-    async def flag_email(
-        folder: str,
-        uid: int,
-        ctx: Context,
-    ) -> str:
-        """Flag an email.
-
-        Args:
-            folder: Folder name
-            uid: Email UID
-            ctx: MCP context
-
-        Returns:
-            Success message
-        """
-        client = get_client_from_context(ctx)
-        try:
-            client.mark_email(uid, folder, r"\Flagged", True)
-            return "Email flagged"
-        except Exception as e:
-            logger.error(f"Error flagging email: {e}")
-            return f"Error: {e}"
-
-    # Delete email
-    @mcp.tool()
-    async def delete_email(
-        folder: str,
-        uid: int,
-        ctx: Context,
-    ) -> str:
-        """Delete an email.
-
-        Args:
-            folder: Folder name
-            uid: Email UID
-            ctx: MCP context
-
-        Returns:
-            Success message
-        """
-        client = get_client_from_context(ctx)
-        try:
-            client.delete_email(uid, folder)
-            return "Email deleted"
-        except Exception as e:
-            logger.error(f"Error deleting email: {e}")
             return f"Error: {e}"
 
     # Process email with multiple actions
@@ -789,9 +741,13 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
               - draft_folder: Folder where the draft was saved (if successful)
               - availability: Whether the time slot was available
         """
-        from workspace_secretary.workflows.invite_parser import identify_meeting_invite_details
+        from workspace_secretary.workflows.invite_parser import (
+            identify_meeting_invite_details,
+        )
         from workspace_secretary.workflows.calendar_mock import check_mock_availability
-        from workspace_secretary.workflows.meeting_reply import generate_meeting_reply_content
+        from workspace_secretary.workflows.meeting_reply import (
+            generate_meeting_reply_content,
+        )
         from workspace_secretary.smtp_client import create_reply_mime
         from workspace_secretary.models import EmailAddress
 
@@ -917,6 +873,7 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
         description: Optional[str] = None,
         location: Optional[str] = None,
         calendar_id: str = "primary",
+        meeting_type: Optional[str] = None,
         ctx: Context = None,  # type: ignore
     ) -> str:
         """Create a new event on Google Calendar.
@@ -928,6 +885,7 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
             description: Detailed description
             location: Event location
             calendar_id: Calendar identifier
+            meeting_type: Optional meeting type ('google_meet' or None)
             ctx: MCP context
 
         Returns:
@@ -944,8 +902,22 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
         if location:
             event_data["location"] = location
 
+        conference_version = 0
+        if meeting_type == "google_meet":
+            conference_version = 1
+            import uuid
+
+            event_data["conferenceData"] = {
+                "createRequest": {
+                    "requestId": str(uuid.uuid4()),
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                }
+            }
+
         try:
-            event = client.create_event(event_data, calendar_id)
+            event = client.create_event(
+                event_data, calendar_id, conference_data_version=conference_version
+            )
             return json.dumps(event, indent=2)
         except Exception as e:
             logger.error(f"Error creating calendar event: {e}")
@@ -1049,4 +1021,392 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
             return json.dumps(availability, indent=2)
         except Exception as e:
             logger.error(f"Error getting calendar availability: {e}")
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @mcp.tool()
+    async def get_daily_briefing(
+        date: Optional[str] = None,
+        ctx: Context = None,  # type: ignore
+    ) -> str:
+        """Get a combined briefing of calendar events and candidate emails for prioritization.
+        Returns high-recall email candidates with signals for LLM-based prioritization.
+        Defaults to today in configured timezone.
+
+        Args:
+            date: Optional date in YYYY-MM-DD format. Defaults to today.
+            ctx: MCP context
+
+        Returns:
+            JSON object with 'calendar_events' and 'email_candidates' (with signals)
+        """
+        from datetime import datetime, time, timedelta
+        from zoneinfo import ZoneInfo
+        import re
+
+        cal_client = get_calendar_client_from_context(ctx)
+        gmail_client = get_gmail_client_from_context(ctx)
+
+        # Get config from Gmail client (all clients share same ServerConfig)
+        config = gmail_client.config
+        tz = ZoneInfo(config.timezone)
+        vip_senders = set(config.vip_senders)
+
+        # Parse target date in configured timezone
+        if date:
+            target_date = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=tz)
+        else:
+            target_date = datetime.now(tz)
+
+        # Calendar window: start/end of day in configured timezone
+        start_of_day = datetime.combine(target_date.date(), time.min, tzinfo=tz)
+        end_of_day = datetime.combine(target_date.date(), time.max, tzinfo=tz)
+
+        # Convert to RFC3339 for Google Calendar API
+        start_of_day_rfc = start_of_day.isoformat()
+        end_of_day_rfc = end_of_day.isoformat()
+
+        briefing: Dict[str, Any] = {
+            "date": target_date.strftime("%Y-%m-%d"),
+            "timezone": config.timezone,
+            "calendar_events": [],
+            "email_candidates": [],
+        }
+
+        try:
+            # 1. Fetch Calendar Events
+            events = cal_client.list_events(start_of_day_rfc, end_of_day_rfc)
+            for event in events:
+                briefing["calendar_events"].append(
+                    {
+                        "summary": event.get("summary"),
+                        "start": event.get("start", {}).get("dateTime")
+                        or event.get("start", {}).get("date"),
+                        "end": event.get("end", {}).get("dateTime")
+                        or event.get("end", {}).get("date"),
+                        "location": event.get("location"),
+                        "hangoutLink": event.get("hangoutLink"),
+                    }
+                )
+
+            # 2. Fetch Email Candidates (high recall)
+            # Base query: unread, recent, exclude noise categories
+            base_query = "is:unread newer_than:7d -category:social -category:promotions"
+
+            # Also fetch important emails (broader time window)
+            important_query = "is:unread is:important newer_than:14d"
+
+            # Collect candidates from both queries, dedupe by id
+            seen_ids: set = set()
+            candidates = []
+
+            for query in [base_query, important_query]:
+                messages = gmail_client.search_messages(query, max_results=30)
+                for m in messages:
+                    msg_id = m["id"]
+                    if msg_id in seen_ids:
+                        continue
+                    seen_ids.add(msg_id)
+
+                    full_msg = gmail_client.get_message(msg_id)
+                    if full_msg:
+                        candidates.append(full_msg)
+
+            # 3. Compute signals for each candidate
+            for email in candidates:
+                sender = str(email.from_).lower()
+                subject = email.subject.lower()
+                snippet = email.get_snippet(200).lower()
+                labels = email.gmail_labels or []
+
+                # Deterministic signals
+                signals = {
+                    "is_important": "IMPORTANT" in labels,
+                    "is_from_vip": any(vip in sender for vip in vip_senders),
+                    "has_question": "?" in subject
+                    or "?" in snippet
+                    or bool(
+                        re.search(r"\b(can you|could you|please|would you)\b", snippet)
+                    ),
+                    "mentions_deadline": bool(
+                        re.search(
+                            r"\b(eod|asap|urgent|deadline|due|by \w+day|by end of)\b",
+                            snippet,
+                        )
+                    ),
+                    "mentions_meeting": bool(
+                        re.search(
+                            r"\b(meet|meeting|schedule|calendar|invite|zoom|google meet|call)\b",
+                            snippet,
+                        )
+                    ),
+                }
+
+                briefing["email_candidates"].append(
+                    {
+                        "id": email.message_id,
+                        "thread_id": email.gmail_thread_id,
+                        "from": str(email.from_),
+                        "subject": email.subject,
+                        "date": email.date.isoformat() if email.date else None,
+                        "snippet": email.get_snippet(150),
+                        "labels": labels,
+                        "signals": signals,
+                    }
+                )
+
+            return json.dumps(briefing, indent=2)
+        except Exception as e:
+            logger.error(f"Error generating daily briefing: {e}")
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @mcp.tool()
+    async def send_email(
+        to: Union[str, List[str]],
+        subject: str,
+        body: str,
+        cc: Optional[Union[str, List[str]]] = None,
+        thread_id: Optional[str] = None,
+        ctx: Context = None,  # type: ignore
+    ) -> str:
+        """Send an email using the Gmail API.
+        CRITICAL SAFETY: This tool performs a mutation (sending an email).
+        Always ensure you have confirmed the content with the user before calling this.
+
+        Args:
+            to: Recipient email address or list of addresses
+            subject: Email subject
+            body: Email body (plain text)
+            cc: Optional CC addresses
+            thread_id: Optional Gmail thread ID to reply within
+            ctx: MCP context
+
+        Returns:
+            JSON status message
+        """
+        import email.message
+        import base64
+
+        gmail_client = get_gmail_client_from_context(ctx)
+
+        try:
+            # Create MIME message
+            msg = email.message.EmailMessage()
+            msg.set_content(body)
+            msg["Subject"] = subject
+            msg["From"] = gmail_client.config.imap.username
+
+            if isinstance(to, list):
+                msg["To"] = ", ".join(to)
+            else:
+                msg["To"] = to
+
+            if cc:
+                if isinstance(cc, list):
+                    msg["Cc"] = ", ".join(cc)
+                else:
+                    msg["Cc"] = cc
+
+            # Encode as base64url
+            raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+            message_body = {"raw": raw}
+            if thread_id:
+                message_body["threadId"] = thread_id
+
+            result = gmail_client.send_message(message_body)
+            return json.dumps(
+                {
+                    "status": "success",
+                    "message_id": result.get("id"),
+                    "thread_id": result.get("threadId"),
+                },
+                indent=2,
+            )
+
+        except Exception as e:
+            logger.error(f"Error sending email: {e}")
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @mcp.tool()
+    async def summarize_thread(
+        thread_id: str,
+        ctx: Context = None,  # type: ignore
+    ) -> str:
+        """Fetch a full conversation thread and provide a structured summary context.
+        Optimized for identifying decisions and pending actions.
+
+        Args:
+            thread_id: Gmail thread identifier
+            ctx: MCP context
+
+        Returns:
+            JSON summary of the thread
+        """
+        gmail_client = get_gmail_client_from_context(ctx)
+
+        try:
+            emails = gmail_client.get_thread(thread_id)
+            if not emails:
+                return json.dumps({"error": "Thread not found or empty"}, indent=2)
+
+            thread_summary = {
+                "thread_id": thread_id,
+                "subject": emails[0].subject,
+                "participant_count": len(set(str(e.from_) for e in emails)),
+                "message_count": len(emails),
+                "messages": [],
+            }
+
+            for e in emails:
+                thread_summary["messages"].append(
+                    {
+                        "from": str(e.from_),
+                        "date": e.date.isoformat() if e.date else None,
+                        "content": e.content.get_best_content()[
+                            :2000
+                        ],  # Truncate per message for context efficiency
+                    }
+                )
+
+            return json.dumps(thread_summary, indent=2)
+        except Exception as e:
+            logger.error(f"Error summarizing thread: {e}")
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @mcp.tool()
+    async def suggest_reschedule(
+        thread_id: str,
+        suggested_date: str,
+        ctx: Context = None,  # type: ignore
+    ) -> str:
+        """Analyze a thread for a meeting, find the existing event, and suggest 3 new slots on a target date.
+        Only suggests slots within configured working hours and workdays.
+
+        Args:
+            thread_id: Gmail thread ID related to the meeting
+            suggested_date: Target date for rescheduling (YYYY-MM-DD)
+            ctx: MCP context
+
+        Returns:
+            JSON with suggested slots and status
+        """
+        from datetime import datetime, time, timedelta
+        from zoneinfo import ZoneInfo
+
+        gmail_client = get_gmail_client_from_context(ctx)
+        cal_client = get_calendar_client_from_context(ctx)
+
+        try:
+            # Get config for timezone and working hours
+            config = gmail_client.config
+            tz = ZoneInfo(config.timezone)
+
+            # Parse working hours
+            start_time_obj = datetime.strptime(
+                config.working_hours.start, "%H:%M"
+            ).time()
+            end_time_obj = datetime.strptime(config.working_hours.end, "%H:%M").time()
+            workdays = config.working_hours.workdays
+
+            # 1. Get thread to find subject/context
+            emails = gmail_client.get_thread(thread_id)
+            if not emails:
+                return json.dumps({"error": "Thread not found"}, indent=2)
+
+            subject = emails[0].subject.replace("Re: ", "").replace("Fwd: ", "")
+
+            # 2. Check availability on suggested_date
+            target_date_naive = datetime.strptime(suggested_date, "%Y-%m-%d")
+            target_date = target_date_naive.replace(tzinfo=tz)
+
+            # Check if target date is a workday (1=Monday, 7=Sunday)
+            weekday = target_date.isoweekday()
+            if weekday not in workdays:
+                return json.dumps(
+                    {
+                        "error": f"Target date {suggested_date} is not a workday (configured workdays: {workdays})"
+                    },
+                    indent=2,
+                )
+
+            # Use configured working hours
+            day_start = datetime.combine(target_date.date(), start_time_obj, tzinfo=tz)
+            day_end = datetime.combine(target_date.date(), end_time_obj, tzinfo=tz)
+
+            # Convert to RFC3339 for Google Calendar API
+            day_start_rfc = day_start.isoformat()
+            day_end_rfc = day_end.isoformat()
+
+            availability = cal_client.get_availability(day_start_rfc, day_end_rfc)
+            busy_slots = (
+                availability.get("calendars", {}).get("primary", {}).get("busy", [])
+            )
+
+            # 3. Simple slot finder (30 min slots)
+            suggestions = []
+            current_slot = day_start
+
+            while len(suggestions) < 3 and current_slot < day_end:
+                slot_start = current_slot
+                slot_end = current_slot + timedelta(minutes=30)
+
+                # Don't suggest slots that extend past working hours
+                if slot_end > day_end:
+                    break
+
+                # Check if busy
+                is_busy = False
+                for busy in busy_slots:
+                    # Parse freebusy timestamps - handle both Z and +HH:MM offsets
+                    b_start_str = busy["start"]
+                    b_end_str = busy["end"]
+
+                    # Convert to timezone-aware datetimes
+                    if b_start_str.endswith("Z"):
+                        b_start = datetime.fromisoformat(
+                            b_start_str.replace("Z", "+00:00")
+                        )
+                    else:
+                        b_start = datetime.fromisoformat(b_start_str)
+
+                    if b_end_str.endswith("Z"):
+                        b_end = datetime.fromisoformat(b_end_str.replace("Z", "+00:00"))
+                    else:
+                        b_end = datetime.fromisoformat(b_end_str)
+
+                    # Convert to configured timezone for comparison
+                    b_start = b_start.astimezone(tz)
+                    b_end = b_end.astimezone(tz)
+
+                    if (slot_start < b_end) and (slot_end > b_start):
+                        is_busy = True
+                        break
+
+                if not is_busy:
+                    suggestions.append(
+                        {
+                            "start": slot_start.isoformat(),
+                            "end": slot_end.isoformat(),
+                        }
+                    )
+
+                current_slot += timedelta(minutes=30)
+
+            return json.dumps(
+                {
+                    "original_subject": subject,
+                    "target_date": suggested_date,
+                    "timezone": config.timezone,
+                    "working_hours": {
+                        "start": config.working_hours.start,
+                        "end": config.working_hours.end,
+                        "workdays": workdays,
+                    },
+                    "suggestions": suggestions,
+                    "note": f"Suggestions are based on configured working hours ({config.working_hours.start} - {config.working_hours.end}) in 30-minute blocks.",
+                },
+                indent=2,
+            )
+
+        except Exception as e:
+            logger.error(f"Error suggesting reschedule: {e}")
             return json.dumps({"error": str(e)}, indent=2)

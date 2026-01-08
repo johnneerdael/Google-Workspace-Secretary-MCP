@@ -10,7 +10,12 @@ from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
 
 from workspace_secretary.config import ServerConfig
-from workspace_secretary.models import Email, EmailAddress, EmailContent, EmailAttachment
+from workspace_secretary.models import (
+    Email,
+    EmailAddress,
+    EmailContent,
+    EmailAttachment,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +24,7 @@ class GmailClient:
     """Client for interacting with Gmail REST API."""
 
     def __init__(self, config: ServerConfig):
-        self.config = config
+        self.config: ServerConfig = config
         self.service = None
         self._creds = None
 
@@ -102,25 +107,6 @@ class GmailClient:
         service = cast(Any, self.service)
         attachment = (
             service.users()
-            .messages()
-            .attachments()
-            .get(userId="me", messageId=message_id, id=attachment_id)
-            .execute()
-        )
-
-        data = attachment.get("data", "")
-        if not data:
-            return b""
-
-        return base64.urlsafe_b64decode(data)
-
-    def get_attachment_data(self, message_id: str, attachment_id: str) -> bytes:
-        """Fetch raw attachment data from Gmail."""
-        if not self.service:
-            self.connect()
-
-        attachment = (
-            self.service.users()
             .messages()
             .attachments()
             .get(userId="me", messageId=message_id, id=attachment_id)
@@ -253,3 +239,16 @@ class GmailClient:
         thread = service.users().threads().get(userId="me", id=thread_id).execute()
 
         return [self._parse_gmail_message(m) for m in thread.get("messages", [])]
+
+    def send_message(self, message_body: Dict[str, Any]) -> Dict[str, Any]:
+        """Send an email message.
+
+        Args:
+            message_body: Dictionary containing 'raw' (base64url encoded MIME)
+                         and optionally 'threadId'.
+        """
+        if not self.service:
+            self.connect()
+
+        service = cast(Any, self.service)
+        return service.users().messages().send(userId="me", body=message_body).execute()

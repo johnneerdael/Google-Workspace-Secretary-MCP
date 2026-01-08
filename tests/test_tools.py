@@ -54,6 +54,12 @@ class TestTools:
         client.search.return_value = [1, 2, 3]
         client.fetch_emails.return_value = {1: mock_email, 2: mock_email, 3: mock_email}
         client.fetch_email.return_value = mock_email
+
+        # Configure config
+        mock_config = MagicMock()
+        mock_config.imap.username = "test@example.com"
+        client.config = mock_config
+
         return client
 
     @pytest.fixture
@@ -147,48 +153,13 @@ class TestTools:
         assert "Error" in result
 
     @pytest.mark.asyncio
-    async def test_flag_email(self, tools, mock_client, mock_context):
-        """Test flagging an email."""
-        # Get the flag_email function
-        flag_email = tools["flag_email"]
-
-        # Reset mock for this test
-        mock_client.mark_email.reset_mock()
-        mock_client.mark_email.return_value = True
-
-        # Test flagging
-        result = await flag_email("INBOX", 123, mock_context)
-        mock_client.mark_email.assert_called_once_with(123, "INBOX", "\\Flagged", True)
-        assert "Email flagged" in result
-
-    @pytest.mark.asyncio
-    async def test_delete_email(self, tools, mock_client, mock_context):
-        """Test deleting an email."""
-        # Get the delete_email function
-        delete_email = tools["delete_email"]
-
-        # Call the function
-        result = await delete_email("INBOX", 123, mock_context)
-
-        # Check the client was called correctly
-        mock_client.delete_email.assert_called_once_with(123, "INBOX")
-
-        # Check the result
-        assert "Email deleted" in result
-
-        # Test error handling
-        mock_client.delete_email.side_effect = Exception("Permission denied")
-        result = await delete_email("INBOX", 123, mock_context)
-        assert "Error" in result
-
-    @pytest.mark.asyncio
     async def test_search_emails(self, tools, mock_client, mock_context, mock_email):
         """Test searching for emails."""
         # Get the search_emails function
         search_emails = tools["search_emails"]
 
         # Test searching with default parameters
-        result = await search_emails("ALL", mock_context)
+        result = await search_emails("ALL", "INBOX", mock_context)
         result_data = json.loads(result)
 
         # Assert client methods were called properly
@@ -223,6 +194,114 @@ class TestTools:
             mock_client.search.reset_mock()
             result = await search_emails(criteria, "INBOX", mock_context)
             assert mock_client.search.called
+
+    @pytest.mark.asyncio
+    async def test_get_daily_briefing(self, tools, mock_client, mock_context):
+        """Test getting daily briefing."""
+        # Mock clients
+        from workspace_secretary.gmail_client import GmailClient
+        from workspace_secretary.calendar_client import CalendarClient
+        from workspace_secretary.config import WorkingHoursConfig
+
+        mock_gmail = MagicMock(spec=GmailClient)
+        mock_cal = MagicMock(spec=CalendarClient)
+
+        # Mock config with new fields
+        mock_config = MagicMock()
+        mock_config.timezone = "America/Los_Angeles"
+        mock_config.working_hours = WorkingHoursConfig(
+            start="09:00", end="17:00", workdays=[1, 2, 3, 4, 5]
+        )
+        mock_config.vip_senders = ["boss@example.com", "ceo@example.com"]
+
+        # Mock email with gmail_labels
+        mock_email = MagicMock(
+            message_id="msg1",
+            gmail_thread_id="thread1",
+            from_=EmailAddress(name="Boss", address="boss@example.com"),
+            subject="Priority task - can you help?",
+            date=datetime.now(),
+            gmail_labels=["IMPORTANT", "INBOX"],
+        )
+        mock_email.get_snippet = lambda n: "This is urgent. Can you complete by EOD?"
+
+        mock_gmail.search_messages.return_value = [{"id": "msg1"}]
+        mock_gmail.get_message.return_value = mock_email
+        mock_gmail.config = mock_config
+
+        mock_cal.list_events.return_value = [
+            {
+                "summary": "Meeting",
+                "start": {"dateTime": "2024-01-01T10:00:00Z"},
+                "end": {"dateTime": "2024-01-01T11:00:00Z"},
+            }
+        ]
+
+        with (
+            patch(
+                "workspace_secretary.tools.get_gmail_client_from_context",
+                return_value=mock_gmail,
+            ),
+            patch(
+                "workspace_secretary.tools.get_calendar_client_from_context",
+                return_value=mock_cal,
+            ),
+        ):
+            get_daily_briefing = tools["get_daily_briefing"]
+            result = await get_daily_briefing(date="2024-01-01", ctx=mock_context)
+            data = json.loads(result)
+
+            # Assert structure
+            assert "calendar_events" in data
+            assert "email_candidates" in data  # Changed from priority_emails
+            assert "timezone" in data
+            assert data["timezone"] == "America/Los_Angeles"
+
+            # Assert calendar events
+            assert len(data["calendar_events"]) == 1
+            assert data["calendar_events"][0]["summary"] == "Meeting"
+
+            # Assert email candidates have signals
+            assert len(data["email_candidates"]) > 0
+            candidate = data["email_candidates"][0]
+            assert "signals" in candidate
+            assert "is_important" in candidate["signals"]
+            assert "is_from_vip" in candidate["signals"]
+            assert "has_question" in candidate["signals"]
+            assert "mentions_deadline" in candidate["signals"]
+            assert "mentions_meeting" in candidate["signals"]
+
+            # Check signal values based on our mock data
+            assert candidate["signals"]["is_important"] == True
+            assert candidate["signals"]["is_from_vip"] == True
+            assert candidate["signals"]["has_question"] == True
+            assert candidate["signals"]["mentions_deadline"] == True
+
+    @pytest.mark.asyncio
+    async def test_send_email(self, tools, mock_client, mock_context):
+        """Test sending an email."""
+        from workspace_secretary.gmail_client import GmailClient
+
+        mock_gmail = MagicMock(spec=GmailClient)
+        mock_gmail.config = mock_client.config
+        mock_gmail.send_message.return_value = {
+            "id": "sent123",
+            "threadId": "thread123",
+        }
+
+        with patch(
+            "workspace_secretary.tools.get_gmail_client_from_context",
+            return_value=mock_gmail,
+        ):
+            send_email = tools["send_email"]
+            result = await send_email(
+                to="test@example.com", subject="Hello", body="World", ctx=mock_context
+            )
+            data = json.loads(result)
+
+            assert data["status"] == "success"
+            assert data["message_id"] == "sent123"
+            mock_gmail.send_message.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_process_email(self, tools, mock_client, mock_context):

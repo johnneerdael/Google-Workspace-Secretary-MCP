@@ -2,9 +2,10 @@
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 import yaml  # type: ignore
 from dotenv import load_dotenv
@@ -122,20 +123,110 @@ class CalendarConfig:
 
 
 @dataclass
+class WorkingHoursConfig:
+    """Working hours configuration for scheduling."""
+
+    start: str
+    end: str
+    workdays: List[int] = field(default_factory=lambda: [1, 2, 3, 4, 5])
+
+    def __post_init__(self):
+        """Validate working hours configuration."""
+        import re
+
+        # Validate time format (must be exactly HH:MM)
+        time_pattern = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+
+        if not time_pattern.match(self.start):
+            raise ValueError(
+                f"start time '{self.start}' must be in HH:MM format (e.g., 09:00)"
+            )
+        if not time_pattern.match(self.end):
+            raise ValueError(
+                f"end time '{self.end}' must be in HH:MM format (e.g., 17:00)"
+            )
+
+        # Parse times for comparison
+        start_h, start_m = map(int, self.start.split(":"))
+        end_h, end_m = map(int, self.end.split(":"))
+
+        # Validate start < end
+        start_minutes = start_h * 60 + start_m
+        end_minutes = end_h * 60 + end_m
+        if start_minutes >= end_minutes:
+            raise ValueError(
+                f"Working hours start time must be before end time (start: {self.start}, end: {self.end})"
+            )
+
+        # Validate workdays
+        if not self.workdays:
+            raise ValueError("workdays must contain at least one workday")
+
+        for day in self.workdays:
+            if not (1 <= day <= 7):
+                raise ValueError(
+                    f"Invalid workday: {day}. workdays must be between 1 and 7 (1=Monday, 7=Sunday)"
+                )
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "WorkingHoursConfig":
+        """Create WorkingHoursConfig from dictionary."""
+        return cls(
+            start=data.get("start", "09:00"),
+            end=data.get("end", "17:00"),
+            workdays=data.get("workdays", [1, 2, 3, 4, 5]),
+        )
+
+
+@dataclass
 class ServerConfig:
     """MCP server configuration."""
 
     imap: ImapConfig
+    timezone: str
+    working_hours: WorkingHoursConfig
     allowed_folders: Optional[List[str]] = None
     calendar: Optional[CalendarConfig] = None
+    vip_senders: List[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        """Validate server configuration."""
+        # Validate timezone
+        try:
+            ZoneInfo(self.timezone)
+        except Exception as e:
+            raise ValueError(
+                f"Invalid timezone '{self.timezone}': {e}. "
+                "Must be a valid IANA timezone (e.g., 'America/Los_Angeles')"
+            )
+
+        # Normalize VIP senders to lowercase for case-insensitive matching
+        self.vip_senders = [email.lower() for email in self.vip_senders]
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ServerConfig":
         """Create configuration from dictionary."""
+        # Timezone is required
+        if "timezone" not in data:
+            raise ValueError(
+                "Missing required 'timezone' configuration. "
+                "Please specify a valid IANA timezone (e.g., 'America/Los_Angeles')"
+            )
+
+        # Working hours is required
+        if "working_hours" not in data:
+            raise ValueError(
+                "Missing required 'working_hours' configuration. "
+                "Please specify start and end times (e.g., start: '09:00', end: '17:00')"
+            )
+
         return cls(
             imap=ImapConfig.from_dict(data.get("imap", {})),
+            timezone=data["timezone"],
+            working_hours=WorkingHoursConfig.from_dict(data["working_hours"]),
             allowed_folders=data.get("allowed_folders"),
             calendar=CalendarConfig.from_dict(data.get("calendar", {})),
+            vip_senders=data.get("vip_senders", []),
         )
 
 
@@ -193,7 +284,21 @@ def load_config(config_path: Optional[str] = None) -> ServerConfig:
                 "username": os.environ.get("IMAP_USERNAME"),
                 "password": os.environ.get("IMAP_PASSWORD"),
                 "use_ssl": os.environ.get("IMAP_USE_SSL", "true").lower() == "true",
-            }
+            },
+            "timezone": os.environ.get("WORKSPACE_TIMEZONE", "UTC"),
+            "working_hours": {
+                "start": os.environ.get("WORKING_HOURS_START", "09:00"),
+                "end": os.environ.get("WORKING_HOURS_END", "17:00"),
+                "workdays": list(
+                    map(
+                        int,
+                        os.environ.get("WORKING_HOURS_DAYS", "1,2,3,4,5").split(","),
+                    )
+                ),
+            },
+            "vip_senders": os.environ.get("VIP_SENDERS", "").split(",")
+            if os.environ.get("VIP_SENDERS")
+            else [],
         }
 
         if os.environ.get("IMAP_ALLOWED_FOLDERS"):
