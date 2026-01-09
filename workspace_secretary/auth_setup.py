@@ -142,7 +142,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--client-secret",
-        help="Google API client secret (optional if credentials file is provided)",
+        help="Google API client secret (optional if credentials file is provided). Use = syntax if secret starts with hyphen: --client-secret=-xyz",
         default=os.environ.get("GMAIL_CLIENT_SECRET"),
     )
     parser.add_argument(
