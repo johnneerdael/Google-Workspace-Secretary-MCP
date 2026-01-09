@@ -78,6 +78,9 @@ class EmailCache:
                 )
                 """
             )
+            # Run migrations BEFORE creating indexes on new columns
+            self._migrate_schema(conn)
+
             conn.execute("CREATE INDEX IF NOT EXISTS idx_folder ON emails(folder)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_unread ON emails(is_unread)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_date ON emails(date)")
@@ -93,8 +96,6 @@ class EmailCache:
                 "CREATE INDEX IF NOT EXISTS idx_in_reply_to ON emails(in_reply_to)"
             )
             conn.commit()
-
-            self._migrate_schema(conn)
             logger.info(f"Email cache database initialized at {self.db_path}")
 
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
