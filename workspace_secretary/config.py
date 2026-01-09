@@ -222,6 +222,8 @@ class UserIdentityConfig:
 
     def __post_init__(self):
         self.email = self.email.lower()
+        if self.aliases is None:
+            self.aliases = []
         self.aliases = [alias.lower() for alias in self.aliases]
 
     @property
