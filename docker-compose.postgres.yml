@@ -29,8 +29,75 @@ services:
       - ./token.json:/app/token.json
       - ./config:/app/config
     environment:
+      # Database connection (referenced in config.yaml as ${POSTGRES_PASSWORD})
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-secretarypass}
+      # Embeddings API key (referenced in config.yaml as ${OPENAI_API_KEY})
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # Optional: Override config values
       - LOG_LEVEL=INFO
     command: ["--config", "/app/config.yaml", "--transport", "http", "--host", "0.0.0.0", "--port", "8000"]
 
 volumes:
   postgres_data:
+
+# =============================================================================
+# SETUP INSTRUCTIONS
+# =============================================================================
+# 
+# 1. Create .env file with your secrets:
+#    
+#    POSTGRES_PASSWORD=your-secure-database-password
+#    OPENAI_API_KEY=sk-your-openai-api-key
+#
+# 2. Configure config.yaml with PostgreSQL backend:
+#
+#    database:
+#      backend: postgres
+#      postgres:
+#        host: postgres
+#        port: 5432
+#        database: secretary
+#        user: secretary
+#        password: ${POSTGRES_PASSWORD}
+#        ssl_mode: prefer
+#      embeddings:
+#        enabled: true
+#        endpoint: https://api.openai.com/v1/embeddings
+#        model: text-embedding-3-small
+#        api_key: ${OPENAI_API_KEY}
+#        dimensions: 1536
+#        batch_size: 100
+#
+# 3. Run OAuth setup first (if not done):
+#
+#    uv run python -m workspace_secretary.auth_setup \
+#      --config config.yaml \
+#      --token-output token.json
+#
+# 4. Start services:
+#
+#    docker compose -f docker-compose.postgres.yml up -d
+#
+# =============================================================================
+# DATABASE INITIALIZATION
+# =============================================================================
+#
+# The PostgreSQL database and pgvector extension are created AUTOMATICALLY:
+# - POSTGRES_DB environment variable creates the 'secretary' database
+# - The application creates the pgvector extension on first connect:
+#   CREATE EXTENSION IF NOT EXISTS vector;
+# - Tables are created automatically via SQLAlchemy migrations
+#
+# No manual SQL or database setup required!
+#
+# =============================================================================
+# SEMANTIC SEARCH
+# =============================================================================
+#
+# When embeddings are enabled, three additional tools become available:
+# - semantic_search_emails: Search by meaning ("emails about budget concerns")
+# - find_related_emails: Find similar emails to a reference
+# - get_embedding_status: Check embeddings system health
+#
+# Embeddings are generated in the background after email sync.
+# Check status: get_embedding_status tool shows emails awaiting embedding.
