@@ -100,17 +100,56 @@ def register_tools(
         Returns:
             JSON string with search results
         """
+        try:
+            cache = get_email_cache_from_context(ctx)
+            if cache and isinstance(criteria, dict):
+                is_unread = None
+                from_addr = None
+                subject_contains = None
+
+                if criteria.get("UNSEEN"):
+                    is_unread = True
+                if criteria.get("SEEN"):
+                    is_unread = False
+                if criteria.get("FROM"):
+                    from_addr = criteria["FROM"]
+                if criteria.get("SUBJECT"):
+                    subject_contains = criteria["SUBJECT"]
+
+                emails = cache.search_emails(
+                    folder=folder,
+                    is_unread=is_unread,
+                    from_addr=from_addr,
+                    subject_contains=subject_contains,
+                    limit=50,
+                )
+
+                results = []
+                for email in emails:
+                    flags = (
+                        email.get("flags", "").split(",") if email.get("flags") else []
+                    )
+                    results.append(
+                        {
+                            "uid": email["uid"],
+                            "from": email["from_addr"],
+                            "subject": email["subject"],
+                            "date": email["date"],
+                            "flags": flags,
+                        }
+                    )
+                return json.dumps(results, indent=2)
+        except Exception:
+            logging.debug("search_emails: Cache not available, falling back to IMAP")
+
         client = get_client_from_context(ctx)
 
         try:
-            # imap_client.search handles dictionary criteria natively and maps
-            # them to proper IMAP search lists with AND logic.
             uids = client.search(criteria, folder=folder)
 
             if not uids:
                 return json.dumps([], indent=2)
 
-            # Fetch basic info for search results
             emails = client.fetch_emails(uids, folder=folder, limit=50)
 
             results = []
@@ -147,6 +186,50 @@ def register_tools(
         Returns:
             JSON string with email details
         """
+        try:
+            cache = get_email_cache_from_context(ctx)
+            if cache:
+                cached_email = cache.get_email_by_uid(uid, folder)
+                if cached_email:
+                    flags = (
+                        cached_email.get("flags", "").split(",")
+                        if cached_email.get("flags")
+                        else []
+                    )
+                    to_list = [
+                        addr.strip()
+                        for addr in (cached_email.get("to_addr") or "").split(",")
+                        if addr.strip()
+                    ]
+                    cc_list = [
+                        addr.strip()
+                        for addr in (cached_email.get("cc_addr") or "").split(",")
+                        if addr.strip()
+                    ]
+
+                    details = {
+                        "uid": uid,
+                        "folder": folder,
+                        "message_id": cached_email.get("message_id"),
+                        "from": cached_email.get("from_addr"),
+                        "to": to_list,
+                        "cc": cc_list,
+                        "subject": cached_email.get("subject"),
+                        "date": cached_email.get("date"),
+                        "content": cached_email.get("body_text")
+                        or cached_email.get("body_html")
+                        or "",
+                        "flags": flags,
+                        "attachments": [],
+                        "gmail_thread_id": None,
+                        "gmail_labels": None,
+                    }
+                    return json.dumps(details, indent=2)
+        except Exception:
+            logging.debug(
+                "get_email_details: Cache not available, falling back to IMAP"
+            )
+
         client = get_client_from_context(ctx)
 
         try:
@@ -154,7 +237,6 @@ def register_tools(
             if not email_obj:
                 return json.dumps({"error": "Email not found"}, indent=2)
 
-            # Format for JSON
             details = {
                 "uid": uid,
                 "folder": folder,
@@ -382,6 +464,44 @@ def register_tools(
         Returns:
             JSON string with emails in the thread
         """
+        try:
+            cache = get_email_cache_from_context(ctx)
+            if cache:
+                thread_emails = cache.get_thread_emails(uid, folder)
+                if thread_emails:
+                    results = []
+                    for email in sorted(
+                        thread_emails, key=lambda e: e.get("date") or ""
+                    ):
+                        flags = (
+                            email.get("flags", "").split(",")
+                            if email.get("flags")
+                            else []
+                        )
+                        to_list = [
+                            addr.strip()
+                            for addr in (email.get("to_addr") or "").split(",")
+                            if addr.strip()
+                        ]
+                        snippet = (
+                            email.get("body_text") or email.get("body_html") or ""
+                        )[:150]
+
+                        results.append(
+                            {
+                                "uid": email["uid"],
+                                "from": email.get("from_addr"),
+                                "to": to_list,
+                                "subject": email.get("subject"),
+                                "date": email.get("date"),
+                                "snippet": snippet,
+                                "flags": flags,
+                            }
+                        )
+                    return json.dumps(results, indent=2)
+        except Exception:
+            logging.debug("get_email_thread: Cache not available, falling back to IMAP")
+
         client = get_client_from_context(ctx)
 
         try:
@@ -1148,6 +1268,54 @@ def register_tools(
             Returns:
                 JSON list of message summaries
             """
+            try:
+                cache = get_email_cache_from_context(ctx)
+                if cache:
+                    is_unread = None
+                    from_addr = None
+                    subject_contains = None
+
+                    query_lower = query.lower()
+                    if "is:unread" in query_lower:
+                        is_unread = True
+                    if "is:read" in query_lower:
+                        is_unread = False
+
+                    import re
+
+                    from_match = re.search(r"from:(\S+)", query_lower)
+                    if from_match:
+                        from_addr = from_match.group(1)
+
+                    subject_match = re.search(
+                        r'subject:(["\']?)(.+?)\1(?:\s|$)', query, re.IGNORECASE
+                    )
+                    if subject_match:
+                        subject_contains = subject_match.group(2)
+
+                    emails = cache.search_emails(
+                        folder="INBOX",
+                        is_unread=is_unread,
+                        from_addr=from_addr,
+                        subject_contains=subject_contains,
+                        limit=max_results,
+                    )
+
+                    results = []
+                    for email in emails:
+                        results.append(
+                            {
+                                "id": email.get("message_id"),
+                                "uid": email["uid"],
+                                "from": email["from_addr"],
+                                "subject": email["subject"],
+                                "date": email["date"],
+                            }
+                        )
+                    return json.dumps(results, indent=2)
+            except Exception:
+                logging.debug("gmail_search: Cache not available, falling back to IMAP")
+
             client = get_client_from_context(ctx)
             try:
                 imap_criteria = _convert_gmail_query_to_imap(query)
@@ -1547,23 +1715,65 @@ def register_tools(
                         }
                     )
 
-                uids = imap_client.search({"UNSEEN": True}, folder="INBOX")
-                uids = uids[:50]
-                emails_dict = imap_client.fetch_emails(uids, folder="INBOX")
+                emails_data = []
+                try:
+                    cache = get_email_cache_from_context(ctx)
+                    if cache:
+                        cached_emails = cache.get_unread_emails(
+                            folder="INBOX", limit=50
+                        )
+                        for email in cached_emails:
+                            emails_data.append(
+                                {
+                                    "uid": email["uid"],
+                                    "message_id": email.get("message_id"),
+                                    "from_": email.get("from_addr", ""),
+                                    "subject": email.get("subject") or "",
+                                    "to_addr": email.get("to_addr") or "",
+                                    "body_text": email.get("body_text")
+                                    or email.get("body_html")
+                                    or "",
+                                    "date": email.get("date"),
+                                }
+                            )
+                except Exception:
+                    pass
+
+                if not emails_data:
+                    imap_client = get_client_from_context(ctx)
+                    uids = imap_client.search({"UNSEEN": True}, folder="INBOX")
+                    uids = uids[:50]
+                    emails_dict = imap_client.fetch_emails(uids, folder="INBOX")
+                    for uid, email in emails_dict.items():
+                        emails_data.append(
+                            {
+                                "uid": uid,
+                                "message_id": email.message_id,
+                                "from_": str(email.from_),
+                                "subject": email.subject or "",
+                                "to_addr": ", ".join(str(addr) for addr in email.to),
+                                "body_text": email.content.get_best_content(),
+                                "date": email.date.isoformat() if email.date else None,
+                            }
+                        )
 
                 identity = server_config.identity
 
-                for uid, email in emails_dict.items():
-                    sender = str(email.from_).lower()
-                    subject = (email.subject or "").lower()
-                    snippet = email.content.get_best_content()[:200].lower()
+                for email_data in emails_data:
+                    sender = email_data["from_"].lower()
+                    subject = email_data["subject"].lower()
+                    body_text = email_data["body_text"]
+                    snippet = body_text[:200].lower()
 
-                    to_addresses = [str(addr).lower() for addr in email.to]
+                    to_addresses = [
+                        addr.strip().lower()
+                        for addr in email_data["to_addr"].split(",")
+                        if addr.strip()
+                    ]
                     is_addressed_to_me = any(
                         identity.matches_email(addr) for addr in to_addresses
                     )
 
-                    body_text = email.content.get_best_content()
                     mentions_my_name = identity.matches_name(body_text)
 
                     signals = {
@@ -1594,12 +1804,12 @@ def register_tools(
 
                     briefing["email_candidates"].append(
                         {
-                            "id": email.message_id,
-                            "uid": uid,
-                            "from": str(email.from_),
-                            "subject": email.subject,
-                            "date": email.date.isoformat() if email.date else None,
-                            "snippet": email.content.get_best_content()[:150],
+                            "id": email_data["message_id"],
+                            "uid": email_data["uid"],
+                            "from": email_data["from_"],
+                            "subject": email_data["subject"],
+                            "date": email_data["date"],
+                            "snippet": body_text[:150],
                             "signals": signals,
                         }
                     )
@@ -1682,10 +1892,57 @@ def register_tools(
             Returns:
                 JSON summary of the thread
             """
+            try:
+                uid = int(thread_id)
+            except ValueError:
+                return json.dumps(
+                    {"error": f"Invalid thread_id '{thread_id}'. Use numeric UID."},
+                    indent=2,
+                )
+
+            try:
+                cache = get_email_cache_from_context(ctx)
+                if cache:
+                    thread_emails = cache.get_thread_emails(uid, "INBOX")
+                    if thread_emails:
+                        sorted_emails = sorted(
+                            thread_emails, key=lambda e: e.get("date") or ""
+                        )
+                        participants = set(
+                            e.get("from_addr", "") for e in sorted_emails
+                        )
+
+                        thread_summary = {
+                            "thread_id": thread_id,
+                            "subject": sorted_emails[0].get("subject")
+                            if sorted_emails
+                            else "",
+                            "participant_count": len(participants),
+                            "message_count": len(sorted_emails),
+                            "messages": [],
+                        }
+
+                        for e in sorted_emails:
+                            content = (e.get("body_text") or e.get("body_html") or "")[
+                                :2000
+                            ]
+                            thread_summary["messages"].append(
+                                {
+                                    "from": e.get("from_addr"),
+                                    "date": e.get("date"),
+                                    "content": content,
+                                }
+                            )
+
+                        return json.dumps(thread_summary, indent=2)
+            except Exception:
+                logging.debug(
+                    "summarize_thread: Cache not available, falling back to IMAP"
+                )
+
             imap_client = get_client_from_context(ctx)
 
             try:
-                uid = int(thread_id)
                 emails = imap_client.fetch_thread(uid)
                 if not emails:
                     return json.dumps({"error": "Thread not found or empty"}, indent=2)
@@ -1708,11 +1965,6 @@ def register_tools(
                     )
 
                 return json.dumps(thread_summary, indent=2)
-            except ValueError:
-                return json.dumps(
-                    {"error": f"Invalid thread_id '{thread_id}'. Use numeric UID."},
-                    indent=2,
-                )
             except Exception as e:
                 logger.error(f"Error summarizing thread (IMAP): {e}")
                 return json.dumps({"error": str(e)}, indent=2)
@@ -2087,6 +2339,13 @@ def register_tools(
                         client.move_email(uid, "INBOX", priority_folder)
                         priority_count += 1
                         priority_emails.append(email_summary)
+
+                        try:
+                            cache = get_email_cache_from_context(ctx)
+                            if cache:
+                                cache.move_email(uid, "INBOX", priority_folder)
+                        except Exception:
+                            pass
                     else:
                         skipped_count += 1
                         skipped_emails.append(
@@ -2231,6 +2490,13 @@ def register_tools(
                     client.move_email(uid, "INBOX", waiting_folder)
                     remaining_count += 1
                     remaining_emails.append(email_summary)
+
+                    try:
+                        cache = get_email_cache_from_context(ctx)
+                        if cache:
+                            cache.move_email(uid, "INBOX", waiting_folder)
+                    except Exception:
+                        pass
 
             return json.dumps(
                 {

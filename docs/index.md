@@ -122,6 +122,26 @@ The AI:
 3. Parses and presents the total
 :::
 
+## What's New in v2.2.0
+
+**RFC 5256 Threading Support** — Full conversation threading with automatic backfill:
+
+- 🧵 **Server-Side Threading**: Uses IMAP `THREAD` command (RFC 5256) when available for accurate parent/child relationships
+- 🔄 **Automatic Backfill**: Existing emails automatically get thread headers populated on first sync after upgrade
+- 📊 **Thread Data Model**: `in_reply_to`, `references`, `thread_root_uid`, `thread_parent_uid`, `thread_depth` stored in SQLite
+- ⚡ **Cache-First Threads**: `get_email_thread` and `summarize_thread` now query local cache instead of IMAP
+- 🔀 **Local Fallback**: Servers without THREAD support get local threading via References/In-Reply-To header analysis
+
+See the [Threading Guide](/guide/threading) for details.
+
+## What's New in v2.1.0
+
+**Documentation & Bug Fixes**:
+
+- 📚 Comprehensive v2.0 documentation overhaul
+- 🔧 Fixed sync direction (newest-first for immediate usability)
+- 🐛 Cache update fixes for triage tools
+
 ## What's New in v2.0.0
 
 **Local-First Architecture** — The server now operates like a proper email client (Thunderbird, Apple Mail):

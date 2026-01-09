@@ -17,7 +17,7 @@ export default defineConfig({
       { text: 'Architecture', link: '/architecture' },
       { text: 'API Reference', link: '/api/' },
       {
-        text: 'v2.1.0',
+        text: 'v2.2.0',
         items: [
           { text: 'Changelog', link: 'https://github.com/johnneerdael/Google-Workspace-Secretary-MCP/releases' },
           { text: 'Contributing', link: 'https://github.com/johnneerdael/Google-Workspace-Secretary-MCP' }
@@ -35,6 +35,7 @@ export default defineConfig({
             { text: 'Security', link: '/guide/security' },
             { text: 'OAuth Workaround', link: '/guide/oauth_workaround' },
             { text: 'Docker Deployment', link: '/guide/docker' },
+            { text: 'Threading', link: '/guide/threading' },
             { text: 'Agent Patterns', link: '/guide/agents' },
             { text: 'Use Cases', link: '/guide/use-cases' },
             { text: 'OpenCode Integration', link: '/guide/opencode' }

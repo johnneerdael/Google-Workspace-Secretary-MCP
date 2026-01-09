@@ -58,6 +58,11 @@ class EmailCache:
                     size INTEGER,
                     modseq INTEGER,
                     synced_at TEXT,
+                    in_reply_to TEXT,
+                    references TEXT,
+                    thread_root_uid INTEGER,
+                    thread_parent_uid INTEGER,
+                    thread_depth INTEGER DEFAULT 0,
                     PRIMARY KEY (uid, folder)
                 )
                 """
@@ -81,8 +86,36 @@ class EmailCache:
                 "CREATE INDEX IF NOT EXISTS idx_message_id ON emails(message_id)"
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_modseq ON emails(modseq)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_thread_root ON emails(thread_root_uid)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_in_reply_to ON emails(in_reply_to)"
+            )
             conn.commit()
+
+            self._migrate_schema(conn)
             logger.info(f"Email cache database initialized at {self.db_path}")
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        """Add new columns to existing databases."""
+        cursor = conn.execute("PRAGMA table_info(emails)")
+        existing_columns = {row[1] for row in cursor.fetchall()}
+
+        migrations = [
+            ("in_reply_to", "TEXT"),
+            ("references", "TEXT"),
+            ("thread_root_uid", "INTEGER"),
+            ("thread_parent_uid", "INTEGER"),
+            ("thread_depth", "INTEGER DEFAULT 0"),
+        ]
+
+        for col_name, col_type in migrations:
+            if col_name not in existing_columns:
+                conn.execute(f"ALTER TABLE emails ADD COLUMN {col_name} {col_type}")
+                logger.info(f"Added column {col_name} to emails table")
+
+        conn.commit()
 
     @contextmanager
     def _get_connection(self) -> Iterator[sqlite3.Connection]:
@@ -137,6 +170,23 @@ class EmailCache:
         self._save_folder_state(
             folder, int(current_uidvalidity or 0), int(current_uidnext or 0)
         )
+
+        backfilled = self.backfill_thread_headers(
+            client, folder, progress_callback=progress_callback
+        )
+
+        if synced > 0 or backfilled > 0:
+            try:
+                if client.has_thread_capability("REFERENCES"):
+                    logger.info(f"Building thread index using IMAP THREAD command")
+                    thread_data = client.get_thread_structure(folder, "REFERENCES")
+                    self.build_thread_index(folder, thread_data)
+                else:
+                    logger.info(f"Building thread index locally (no THREAD support)")
+                    self.build_thread_index(folder)
+            except Exception as e:
+                logger.warning(f"Failed to build thread index: {e}")
+
         return synced
 
     def _full_sync(
@@ -268,6 +318,112 @@ class EmailCache:
 
             return len(deleted_uids)
 
+    def backfill_thread_headers(
+        self,
+        client: "ImapClient",
+        folder: str = "INBOX",
+        batch_size: int = 100,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> int:
+        """Fetch In-Reply-To/References headers for emails missing thread data.
+
+        This is a fast operation - fetches headers only, not full email bodies.
+        Use after schema migration to populate thread data for existing emails.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT uid FROM emails 
+                WHERE folder = ? AND (in_reply_to IS NULL OR in_reply_to = '')
+                """,
+                (folder,),
+            )
+            uids_to_backfill = [row[0] for row in cursor.fetchall()]
+
+        if not uids_to_backfill:
+            logger.info(f"[BACKFILL] No emails need thread header backfill in {folder}")
+            return 0
+
+        total = len(uids_to_backfill)
+        logger.info(
+            f"[BACKFILL] Fetching thread headers for {total} emails in {folder}"
+        )
+
+        updated = 0
+        client.select_folder(folder, readonly=True)
+
+        for i in range(0, total, batch_size):
+            batch_uids = uids_to_backfill[i : i + batch_size]
+
+            try:
+                imap_client = client._get_client()
+                fetch_data = imap_client.fetch(
+                    batch_uids,
+                    ["BODY.PEEK[HEADER.FIELDS (IN-REPLY-TO REFERENCES MESSAGE-ID)]"],
+                )
+
+                with self._get_connection() as conn:
+                    for uid, data in fetch_data.items():
+                        header_bytes = data.get(
+                            b"BODY[HEADER.FIELDS (IN-REPLY-TO REFERENCES MESSAGE-ID)]",
+                            b"",
+                        )
+                        if isinstance(header_bytes, bytes):
+                            header_str = header_bytes.decode("utf-8", errors="replace")
+                        else:
+                            header_str = str(header_bytes)
+
+                        in_reply_to = ""
+                        references = ""
+                        message_id = ""
+
+                        for line in header_str.split("\n"):
+                            line = line.strip()
+                            lower_line = line.lower()
+                            if lower_line.startswith("in-reply-to:"):
+                                in_reply_to = line[12:].strip()
+                            elif lower_line.startswith("references:"):
+                                references = line[11:].strip()
+                            elif lower_line.startswith("message-id:"):
+                                message_id = line[11:].strip()
+
+                        conn.execute(
+                            """
+                            UPDATE emails SET in_reply_to = ?, references = ?,
+                                message_id = COALESCE(NULLIF(message_id, ''), ?)
+                            WHERE uid = ? AND folder = ?
+                            """,
+                            (in_reply_to, references, message_id, uid, folder),
+                        )
+                        updated += 1
+
+                    conn.commit()
+
+                if progress_callback:
+                    progress_callback(updated, total)
+
+                logger.info(f"[BACKFILL] Progress: {updated}/{total} headers fetched")
+
+            except Exception as e:
+                logger.error(f"[BACKFILL] Error fetching batch: {e}")
+                continue
+
+        if updated > 0:
+            logger.info(f"[BACKFILL] Building thread index for {folder}")
+            try:
+                if client.has_thread_capability("REFERENCES"):
+                    thread_data = client.get_thread_structure(folder, "REFERENCES")
+                    self.build_thread_index(folder, thread_data)
+                else:
+                    self.build_thread_index(folder)
+            except Exception as e:
+                logger.warning(f"[BACKFILL] Failed to build thread index: {e}")
+
+        logger.info(
+            f"[BACKFILL] Complete: {updated} emails updated with thread headers"
+        )
+        return updated
+
     def get_folder_state(self, folder: str) -> Optional[dict[str, Any]]:
         with self._get_connection() as conn:
             cursor = conn.execute(
@@ -324,12 +480,16 @@ class EmailCache:
         body_text = email.content.text or ""
         body_html = email.content.html or ""
 
+        in_reply_to = email.in_reply_to or ""
+        references = " ".join(email.references) if email.references else ""
+
         conn.execute(
             """
             INSERT OR REPLACE INTO emails (
                 uid, folder, message_id, subject, from_addr, to_addr, cc_addr,
-                date, body_text, body_html, flags, is_unread, is_important, size, synced_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                date, body_text, body_html, flags, is_unread, is_important, size, synced_at,
+                in_reply_to, references
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 uid,
@@ -347,8 +507,32 @@ class EmailCache:
                 "\\Flagged" in flags or "\\Important" in flags,
                 len(body_text) + len(body_html),
                 datetime.utcnow().isoformat(),
+                in_reply_to,
+                references,
             ),
         )
+
+    def get_email_by_uid(self, uid: int, folder: str) -> Optional[dict[str, Any]]:
+        """Get a single email by UID and folder."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM emails WHERE uid = ? AND folder = ?",
+                (uid, folder),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_emails_by_uids(self, uids: list[int], folder: str) -> list[dict[str, Any]]:
+        """Get multiple emails by UIDs."""
+        if not uids:
+            return []
+        with self._get_connection() as conn:
+            placeholders = ",".join("?" * len(uids))
+            cursor = conn.execute(
+                f"SELECT * FROM emails WHERE folder = ? AND uid IN ({placeholders}) ORDER BY date DESC",
+                (folder, *uids),
+            )
+            return [dict(row) for row in cursor.fetchall()]
 
     def get_unread_emails(
         self, folder: str = "INBOX", limit: int = 50
@@ -513,3 +697,161 @@ class EmailCache:
             )
             result = cursor.fetchone()[0]
             return datetime.fromisoformat(result) if result else None
+
+    def get_thread_emails(self, uid: int, folder: str) -> list[dict[str, Any]]:
+        """Get all emails in a thread by following References/In-Reply-To chains."""
+        with self._get_connection() as conn:
+            root_email = self.get_email_by_uid(uid, folder)
+            if not root_email:
+                return []
+
+            thread_uids: set[int] = {uid}
+            message_id = root_email.get("message_id", "")
+            in_reply_to = root_email.get("in_reply_to", "")
+            references = root_email.get("references", "")
+
+            all_message_ids: set[str] = set()
+            if message_id:
+                all_message_ids.add(message_id)
+            if in_reply_to:
+                all_message_ids.add(in_reply_to)
+            if references:
+                all_message_ids.update(references.split())
+
+            processed_ids: set[str] = set()
+            while all_message_ids - processed_ids:
+                current_id = (all_message_ids - processed_ids).pop()
+                processed_ids.add(current_id)
+
+                cursor = conn.execute(
+                    """
+                    SELECT uid, message_id, in_reply_to, references FROM emails
+                    WHERE folder = ? AND (
+                        message_id = ? OR
+                        in_reply_to = ? OR
+                        instr(references, ?) > 0
+                    )
+                    """,
+                    (folder, current_id, current_id, current_id),
+                )
+
+                for row in cursor.fetchall():
+                    thread_uids.add(row[0])
+                    if row[1]:
+                        all_message_ids.add(row[1])
+                    if row[2]:
+                        all_message_ids.add(row[2])
+                    if row[3]:
+                        all_message_ids.update(row[3].split())
+
+            return self.get_emails_by_uids(list(thread_uids), folder)
+
+    def build_thread_index(
+        self,
+        folder: str = "INBOX",
+        thread_data: Optional[dict[int, dict[str, Any]]] = None,
+    ) -> int:
+        """Build thread index from IMAP THREAD command results or local analysis.
+
+        Args:
+            folder: Folder to index
+            thread_data: Optional dict from ImapClient.get_thread_structure()
+
+        Returns:
+            Number of emails updated with thread info
+        """
+        with self._get_connection() as conn:
+            if thread_data:
+                updated = 0
+                for uid, info in thread_data.items():
+                    conn.execute(
+                        """
+                        UPDATE emails SET
+                            thread_root_uid = ?,
+                            thread_parent_uid = ?,
+                            thread_depth = ?
+                        WHERE uid = ? AND folder = ?
+                        """,
+                        (
+                            info["thread_root"],
+                            info["parent_uid"],
+                            info["depth"],
+                            uid,
+                            folder,
+                        ),
+                    )
+                    updated += 1
+                conn.commit()
+                return updated
+
+            return self._build_local_thread_index(conn, folder)
+
+    def _build_local_thread_index(self, conn: sqlite3.Connection, folder: str) -> int:
+        """Build thread index locally using References/In-Reply-To headers."""
+        cursor = conn.execute(
+            "SELECT uid, message_id, in_reply_to, references FROM emails WHERE folder = ?",
+            (folder,),
+        )
+        emails = {
+            row[0]: {"message_id": row[1], "in_reply_to": row[2], "references": row[3]}
+            for row in cursor.fetchall()
+        }
+
+        message_id_to_uid: dict[str, int] = {}
+        for uid, data in emails.items():
+            if data["message_id"]:
+                message_id_to_uid[data["message_id"]] = uid
+
+        updated = 0
+        for uid, data in emails.items():
+            parent_uid: Optional[int] = None
+            thread_root_uid = uid
+
+            if data["in_reply_to"] and data["in_reply_to"] in message_id_to_uid:
+                parent_uid = message_id_to_uid[data["in_reply_to"]]
+
+            refs = data["references"].split() if data["references"] else []
+            if refs:
+                root_msg_id = refs[0]
+                if root_msg_id in message_id_to_uid:
+                    thread_root_uid = message_id_to_uid[root_msg_id]
+
+            depth = len(refs)
+
+            conn.execute(
+                """
+                UPDATE emails SET
+                    thread_root_uid = ?,
+                    thread_parent_uid = ?,
+                    thread_depth = ?
+                WHERE uid = ? AND folder = ?
+                """,
+                (thread_root_uid, parent_uid, depth, uid, folder),
+            )
+            updated += 1
+
+        conn.commit()
+        return updated
+
+    def get_threads_summary(
+        self, folder: str = "INBOX", limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Get thread summaries with most recent message and count."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT 
+                    COALESCE(thread_root_uid, uid) as thread_id,
+                    COUNT(*) as message_count,
+                    MAX(date) as latest_date,
+                    MIN(date) as earliest_date,
+                    GROUP_CONCAT(DISTINCT from_addr) as participants
+                FROM emails
+                WHERE folder = ?
+                GROUP BY COALESCE(thread_root_uid, uid)
+                ORDER BY latest_date DESC
+                LIMIT ?
+                """,
+                (folder, limit),
+            )
+            return [dict(row) for row in cursor.fetchall()]

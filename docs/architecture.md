@@ -96,6 +96,11 @@ CREATE TABLE emails (
     size INTEGER,                   -- Approximate message size
     modseq INTEGER,                 -- CONDSTORE modification sequence
     synced_at TEXT,                 -- Last sync timestamp
+    in_reply_to TEXT,               -- Message-ID of parent (v2.2.0)
+    references TEXT,                -- Space-separated ancestor Message-IDs (v2.2.0)
+    thread_root_uid INTEGER,        -- UID of thread root message (v2.2.0)
+    thread_parent_uid INTEGER,      -- UID of direct parent message (v2.2.0)
+    thread_depth INTEGER DEFAULT 0, -- Nesting level: 0=root (v2.2.0)
     PRIMARY KEY (uid, folder)
 );
 ```
@@ -123,6 +128,8 @@ CREATE INDEX idx_date ON emails(date);
 CREATE INDEX idx_from ON emails(from_addr);
 CREATE INDEX idx_message_id ON emails(message_id);
 CREATE INDEX idx_modseq ON emails(modseq);
+CREATE INDEX idx_thread_root ON emails(thread_root_uid);    -- v2.2.0
+CREATE INDEX idx_in_reply_to ON emails(in_reply_to);        -- v2.2.0
 ```
 
 ## IMAP Sync Protocol
@@ -132,6 +139,7 @@ The sync implementation follows best practices from IMAP RFCs:
 - **RFC 3501**: IMAP4rev1 base protocol
 - **RFC 4549**: Synchronization Operations for Disconnected IMAP4 Clients
 - **RFC 5162**: IMAP4 Extensions for Quick Mailbox Resynchronization (QRESYNC)
+- **RFC 5256**: IMAP SORT and THREAD Extensions (v2.2.0)
 
 ### UIDVALIDITY
 
@@ -348,3 +356,71 @@ Approximate storage requirements:
 | 25,000 | ~250-500 MB |
 
 Size varies based on email content (attachments are not cached, only body text/HTML).
+
+## Threading Architecture (v2.2.0)
+
+### RFC 5256 SORT and THREAD
+
+v2.2.0 adds support for server-side threading via the IMAP `THREAD` command:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     sync_folder()                            │
+└─────────────────────┬───────────────────────────────────────┘
+                      ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Fetch new emails (incremental)                  │
+└─────────────────────┬───────────────────────────────────────┘
+                      ▼
+┌─────────────────────────────────────────────────────────────┐
+│         Backfill thread headers (if missing)                 │
+│    Detects emails with empty in_reply_to/references          │
+│    Fetches ONLY headers from IMAP (fast)                     │
+└─────────────────────┬───────────────────────────────────────┘
+                      ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Build thread index                              │
+│   ┌─────────────────┴─────────────────┐                     │
+│   │                                   │                     │
+│ [THREAD=REFERENCES]          [No THREAD support]            │
+│   │                                   │                     │
+│ Server computes            Local algorithm via              │
+│ parent/child               References/In-Reply-To           │
+│   │                                   │                     │
+│   └─────────────────┬─────────────────┘                     │
+│                     ▼                                        │
+│   Store: thread_root_uid, thread_parent_uid, thread_depth   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Thread Data Model
+
+Each email stores threading relationships:
+
+| Column | Description |
+|--------|-------------|
+| `in_reply_to` | Message-ID of the parent email |
+| `references` | Space-separated list of all ancestor Message-IDs |
+| `thread_root_uid` | UID of the first message in the thread |
+| `thread_parent_uid` | UID of the direct parent message |
+| `thread_depth` | Nesting level (0 = root, 1 = first reply, etc.) |
+
+### Automatic Backfill
+
+When upgrading from v2.1.x, existing emails lack thread headers. The system automatically:
+
+1. Detects emails with empty `in_reply_to`/`references` columns
+2. Fetches only the headers from IMAP (not full body - fast)
+3. Updates SQLite with thread data
+4. Builds the thread index
+
+This is a one-time migration that runs automatically on first sync after upgrade.
+
+### Thread Query Performance
+
+| Operation | Before v2.2.0 | After v2.2.0 |
+|-----------|---------------|--------------|
+| Get thread (10 msgs) | 2-5s (N IMAP queries) | < 50ms (SQLite) |
+| Summarize thread | 3-8s | < 100ms |
+
+See the [Threading Guide](/guide/threading) for complete documentation.

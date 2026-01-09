@@ -2,6 +2,10 @@
 
 Get up and running with Google Workspace Secretary MCP in minutes.
 
+::: tip What's New in v2.2.0
+Full **email threading** support with RFC 5256. Thread queries are now instant via SQLite cache. Upgrading? Thread data is backfilled automatically on first sync. See [Threading Guide](/guide/threading) for details.
+:::
+
 ::: tip What's New in v2.0.0
 The server now uses a **local-first architecture** with SQLite caching. After initial sync, email queries are instant (sub-millisecond). See [Architecture](/architecture) for details.
 :::

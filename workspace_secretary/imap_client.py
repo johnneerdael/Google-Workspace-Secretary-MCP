@@ -824,6 +824,244 @@ class ImapClient:
             logger.error(f"Failed to remove Gmail labels: {e}")
             return False
 
+    def has_sort_capability(self) -> bool:
+        """Check if server supports SORT extension (RFC 5256)."""
+        capabilities = self.get_capabilities()
+        return any(cap.startswith("SORT") for cap in capabilities)
+
+    def has_thread_capability(self, algorithm: str = "REFERENCES") -> bool:
+        """Check if server supports THREAD extension (RFC 5256)."""
+        capabilities = self.get_capabilities()
+        return f"THREAD={algorithm.upper()}" in capabilities
+
+    def sort(
+        self,
+        sort_criteria: List[str],
+        search_criteria: Union[str, List, Dict[str, Any]] = "ALL",
+        folder: str = "INBOX",
+        charset: str = "UTF-8",
+    ) -> List[int]:
+        """Sort messages using server-side SORT command (RFC 5256).
+
+        Args:
+            sort_criteria: List of sort keys (DATE, FROM, SUBJECT, SIZE, ARRIVAL, CC, TO).
+                          Prefix with REVERSE for descending order.
+            search_criteria: IMAP search criteria to filter messages
+            folder: Folder to search in
+            charset: Character set for search criteria
+
+        Returns:
+            List of message UIDs in sorted order
+
+        Raises:
+            ConnectionError: If not connected
+            ValueError: If SORT not supported
+        """
+        if not self.has_sort_capability():
+            raise ValueError("Server does not support SORT extension")
+
+        client = self._get_client()
+        self.select_folder(folder, readonly=True)
+
+        if isinstance(search_criteria, str):
+            if search_criteria.upper() == "ALL":
+                search_criteria = ["ALL"]
+            else:
+                search_criteria = [search_criteria]
+        elif isinstance(search_criteria, dict):
+            search_list = []
+            if search_criteria.get("UNSEEN"):
+                search_list.append("UNSEEN")
+            if search_criteria.get("ALL"):
+                search_list.append("ALL")
+            if not search_list:
+                search_list = ["ALL"]
+            search_criteria = search_list
+
+        try:
+            result = client._raw_command_untagged(
+                b"SORT",
+                [
+                    b"(" + b" ".join(s.encode() for s in sort_criteria) + b")",
+                    charset.encode(),
+                ]
+                + [s.encode() if isinstance(s, str) else s for s in search_criteria],
+                uid=True,
+            )
+
+            uids = []
+            for line in result.get(b"SORT", []):
+                if isinstance(line, bytes):
+                    uids.extend(int(uid) for uid in line.split())
+                elif isinstance(line, (list, tuple)):
+                    uids.extend(int(uid) for uid in line)
+            return uids
+        except Exception as e:
+            logger.error(f"SORT command failed: {e}")
+            raise
+
+    def thread(
+        self,
+        algorithm: str = "REFERENCES",
+        search_criteria: Union[str, List, Dict[str, Any]] = "ALL",
+        folder: str = "INBOX",
+        charset: str = "UTF-8",
+    ) -> List[Any]:
+        """Get thread structure using server-side THREAD command (RFC 5256).
+
+        Args:
+            algorithm: Threading algorithm (REFERENCES or ORDEREDSUBJECT)
+            search_criteria: IMAP search criteria to filter messages
+            folder: Folder to search in
+            charset: Character set for search criteria
+
+        Returns:
+            Nested list structure representing thread hierarchy.
+            Example: [[2], [3, 6, [4, 23], [44, 7, 96]]]
+            - Thread 1: just message 2
+            - Thread 2: 3 -> 6, then branches to (4 -> 23) and (44 -> 7 -> 96)
+
+        Raises:
+            ConnectionError: If not connected
+            ValueError: If THREAD not supported
+        """
+        if not self.has_thread_capability(algorithm):
+            raise ValueError(f"Server does not support THREAD={algorithm}")
+
+        client = self._get_client()
+        self.select_folder(folder, readonly=True)
+
+        if isinstance(search_criteria, str):
+            if search_criteria.upper() == "ALL":
+                search_criteria = ["ALL"]
+            else:
+                search_criteria = [search_criteria]
+        elif isinstance(search_criteria, dict):
+            search_list = []
+            if search_criteria.get("UNSEEN"):
+                search_list.append("UNSEEN")
+            if search_criteria.get("ALL"):
+                search_list.append("ALL")
+            if not search_list:
+                search_list = ["ALL"]
+            search_criteria = search_list
+
+        try:
+            result = client._raw_command_untagged(
+                b"THREAD",
+                [
+                    algorithm.upper().encode(),
+                    charset.encode(),
+                ]
+                + [s.encode() if isinstance(s, str) else s for s in search_criteria],
+                uid=True,
+            )
+
+            raw_thread = result.get(b"THREAD", [])
+            if raw_thread:
+                return self._parse_thread_response(raw_thread[0] if raw_thread else b"")
+            return []
+        except Exception as e:
+            logger.error(f"THREAD command failed: {e}")
+            raise
+
+    def _parse_thread_response(self, data: bytes) -> List[Any]:
+        """Parse THREAD response into nested list structure.
+
+        THREAD response format: (2)(3 6 (4 23)(44 7 96))
+        Parses into: [[2], [3, 6, [4, 23], [44, 7, 96]]]
+        """
+        if not data:
+            return []
+
+        if isinstance(data, bytes):
+            data_str = data.decode("utf-8", errors="replace")
+        else:
+            data_str = str(data)
+
+        result: List[Any] = []
+        stack: List[List[Any]] = [result]
+        current_num = ""
+
+        for char in data_str:
+            if char == "(":
+                new_list: List[Any] = []
+                stack[-1].append(new_list)
+                stack.append(new_list)
+            elif char == ")":
+                if current_num:
+                    stack[-1].append(int(current_num))
+                    current_num = ""
+                if len(stack) > 1:
+                    stack.pop()
+            elif char.isdigit():
+                current_num += char
+            elif char == " " and current_num:
+                stack[-1].append(int(current_num))
+                current_num = ""
+
+        if current_num:
+            stack[-1].append(int(current_num))
+
+        return result
+
+    def get_thread_structure(
+        self,
+        folder: str = "INBOX",
+        algorithm: str = "REFERENCES",
+    ) -> Dict[int, Dict[str, Any]]:
+        """Get thread structure as a dictionary mapping UIDs to thread info.
+
+        Returns:
+            Dictionary mapping each UID to:
+            - thread_root: UID of the thread root message
+            - parent_uid: UID of parent message (None for root)
+            - children: List of child UIDs
+            - depth: Nesting depth (0 for root)
+        """
+        threads = self.thread(algorithm=algorithm, folder=folder)
+
+        result: Dict[int, Dict[str, Any]] = {}
+
+        def process_thread(
+            items: List[Any],
+            thread_root: Optional[int] = None,
+            parent_uid: Optional[int] = None,
+            depth: int = 0,
+        ) -> None:
+            prev_uid: Optional[int] = None
+            for item in items:
+                if isinstance(item, int):
+                    uid = item
+                    if thread_root is None:
+                        thread_root = uid
+                    result[uid] = {
+                        "thread_root": thread_root,
+                        "parent_uid": parent_uid if prev_uid is None else prev_uid,
+                        "children": [],
+                        "depth": depth,
+                    }
+                    if prev_uid is not None and prev_uid in result:
+                        result[prev_uid]["children"].append(uid)
+                    elif parent_uid is not None and parent_uid in result:
+                        result[parent_uid]["children"].append(uid)
+                    prev_uid = uid
+                elif isinstance(item, list):
+                    process_thread(item, thread_root, prev_uid, depth + 1)
+
+        for thread in threads:
+            if isinstance(thread, list):
+                process_thread(thread)
+            elif isinstance(thread, int):
+                result[thread] = {
+                    "thread_root": thread,
+                    "parent_uid": None,
+                    "children": [],
+                    "depth": 0,
+                }
+
+        return result
+
     def search_by_thread_id(self, thread_id: str, folder: str = "INBOX") -> List[int]:
         """Search for emails by Gmail thread ID.
 

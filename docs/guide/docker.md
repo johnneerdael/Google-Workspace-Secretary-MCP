@@ -101,6 +101,27 @@ After initial sync, background sync runs every 5 minutes:
 3. Detects and removes deleted emails
 4. Typical incremental sync: < 1 second
 
+### Thread Header Backfill (v2.2.0+)
+
+If you're upgrading from v2.1.x or earlier, the first sync after upgrade will backfill thread headers (`In-Reply-To`, `References`) for existing emails:
+
+```
+[BACKFILL] Found 26000 emails missing thread headers
+[BACKFILL] Progress: 1000/26000 headers fetched
+[BACKFILL] Progress: 5000/26000 headers fetched
+...
+[BACKFILL] Complete: 26000 headers updated
+```
+
+**What's happening?**
+- The server fetches ONLY headers (not full bodies) from IMAP
+- This is fast: ~1000 headers/second on a good connection
+- After backfill, thread queries become instant via SQLite
+
+**Backfill is automatic and one-time.** Future syncs download thread headers with every new email.
+
+See [Threading Guide](/guide/threading) for technical details on RFC 5256 support.
+
 ### Cache Management
 
 **Reset the cache** (re-download all emails):
