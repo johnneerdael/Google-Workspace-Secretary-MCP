@@ -126,13 +126,16 @@ class ClientManager:
         logger.info("Establishing IMAP connection...")
         self.imap_client.connect()
 
-        if self.config and self.config.calendar and self.config.calendar.enabled:
-            if self.calendar_client:
-                logger.info("Connecting to Google Calendar...")
-                self.calendar_client.connect()
-
         self._connections_established = True
         self._start_background_sync()
+
+        if self.config and self.config.calendar and self.config.calendar.enabled:
+            if self.calendar_client:
+                try:
+                    logger.info("Connecting to Google Calendar...")
+                    self.calendar_client.connect()
+                except Exception as e:
+                    logger.warning(f"Calendar connection failed (non-fatal): {e}")
 
     def _start_background_sync(self) -> None:
         def sync_loop():

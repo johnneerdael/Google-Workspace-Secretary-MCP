@@ -1160,67 +1160,65 @@ def register_tools(
             logger.error(f"Error listing calendar events: {e}")
             return json.dumps({"error": str(e)}, indent=2)
 
-    if oauth_mode == OAuthMode.API:
+    @mcp.tool()
+    async def create_calendar_event(
+        summary: str,
+        start_time: str,
+        end_time: str,
+        description: Optional[str] = None,
+        location: Optional[str] = None,
+        calendar_id: str = "primary",
+        meeting_type: Optional[str] = None,
+        ctx: Context = None,  # type: ignore
+    ) -> str:
+        """Create a new event on Google Calendar.
 
-        @mcp.tool()
-        async def create_calendar_event(
-            summary: str,
-            start_time: str,
-            end_time: str,
-            description: Optional[str] = None,
-            location: Optional[str] = None,
-            calendar_id: str = "primary",
-            meeting_type: Optional[str] = None,
-            ctx: Context = None,  # type: ignore
-        ) -> str:
-            """Create a new event on Google Calendar.
+        Args:
+            summary: Title of the event
+            start_time: ISO format start time (e.g. 2024-01-01T10:00:00Z)
+            end_time: ISO format end time
+            description: Detailed description
+            location: Event location
+            calendar_id: Calendar identifier
+            meeting_type: Optional meeting type ('google_meet' or None)
+            ctx: MCP context
 
-            NOTE: This tool is only available in API mode (requires calendar.events scope).
+        Returns:
+            JSON representation of created event
+        """
+        client = get_calendar_client_from_context(ctx)
+        event_data = {
+            "summary": summary,
+            "start": {"dateTime": start_time},
+            "end": {"dateTime": end_time},
+        }
+        if description:
+            event_data["description"] = description
+        if location:
+            event_data["location"] = location
 
-            Args:
-                summary: Title of the event
-                start_time: ISO format start time (e.g. 2024-01-01T10:00:00Z)
-                end_time: ISO format end time
-                description: Detailed description
-                location: Event location
-                calendar_id: Calendar identifier
-                meeting_type: Optional meeting type ('google_meet' or None)
-                ctx: MCP context
+        conference_version = 0
+        if meeting_type == "google_meet":
+            conference_version = 1
+            import uuid
 
-            Returns:
-                JSON representation of created event
-            """
-            client = get_calendar_client_from_context(ctx)
-            event_data = {
-                "summary": summary,
-                "start": {"dateTime": start_time},
-                "end": {"dateTime": end_time},
-            }
-            if description:
-                event_data["description"] = description
-            if location:
-                event_data["location"] = location
-
-            conference_version = 0
-            if meeting_type == "google_meet":
-                conference_version = 1
-                import uuid
-
-                event_data["conferenceData"] = {
-                    "createRequest": {
-                        "requestId": str(uuid.uuid4()),
-                        "conferenceSolutionKey": {"type": "hangoutsMeet"},
-                    }
+            event_data["conferenceData"] = {
+                "createRequest": {
+                    "requestId": str(uuid.uuid4()),
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
                 }
+            }
 
-            try:
-                event = client.create_event(
-                    event_data, calendar_id, conference_data_version=conference_version
-                )
-                return json.dumps(event, indent=2)
-            except Exception as e:
-                logger.error(f"Error creating calendar event: {e}")
-                return json.dumps({"error": str(e)}, indent=2)
+        try:
+            event = client.create_event(
+                event_data, calendar_id, conference_data_version=conference_version
+            )
+            return json.dumps(event, indent=2)
+        except Exception as e:
+            logger.error(f"Error creating calendar event: {e}")
+            return json.dumps({"error": str(e)}, indent=2)
+
+    if oauth_mode == OAuthMode.API:
 
         @mcp.tool()
         async def gmail_search(

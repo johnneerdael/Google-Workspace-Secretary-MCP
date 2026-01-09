@@ -34,10 +34,7 @@ class CalendarClient:
             token_uri="https://oauth2.googleapis.com/token",
             client_id=oauth.client_id,
             client_secret=oauth.client_secret,
-            scopes=[
-                "https://www.googleapis.com/auth/calendar",
-                "https://www.googleapis.com/auth/calendar.events",
-            ],
+            scopes=["https://www.googleapis.com/auth/calendar"],
         )
 
         # Refresh if expired
