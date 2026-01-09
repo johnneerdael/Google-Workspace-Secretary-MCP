@@ -224,6 +224,25 @@ class UserIdentityConfig:
         self.email = self.email.lower()
         self.aliases = [alias.lower() for alias in self.aliases]
 
+    @property
+    def name_parts(self) -> List[str]:
+        """Split full_name into individual name parts (first, middle, last, etc.)."""
+        if not self.full_name:
+            return []
+        return [part.strip() for part in self.full_name.split() if part.strip()]
+
+    @property
+    def first_name(self) -> Optional[str]:
+        """Extract first name from full_name."""
+        parts = self.name_parts
+        return parts[0] if parts else None
+
+    @property
+    def last_name(self) -> Optional[str]:
+        """Extract last name from full_name."""
+        parts = self.name_parts
+        return parts[-1] if len(parts) > 1 else None
+
     def matches_email(self, address: str) -> bool:
         """Check if an email address belongs to this user."""
         addr_lower = address.lower()
@@ -236,6 +255,13 @@ class UserIdentityConfig:
         if not self.full_name:
             return False
         return self.full_name.lower() in text.lower()
+
+    def matches_name_part(self, text: str) -> bool:
+        """Check if text contains any part of user's name (first, last, etc.)."""
+        if not self.name_parts:
+            return False
+        text_lower = text.lower()
+        return any(part.lower() in text_lower for part in self.name_parts)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "UserIdentityConfig":

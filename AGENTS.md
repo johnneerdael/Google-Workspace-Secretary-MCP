@@ -143,6 +143,8 @@ Would you like me to:
 Tools provide **signals** for interpretation, NOT hardcoded decisions.
 
 ### What Tools Return (Signals)
+- `is_addressed_to_me` - User's email is in To: field
+- `mentions_my_name` - User's first or last name mentioned in body
 - `is_important` - Gmail's importance marker
 - `is_from_vip` - Sender matches configured VIP list
 - `has_question` - Detects question marks or phrases like "can you", "could you"
@@ -226,6 +228,16 @@ AI: ✅ Reverts to standard Draft-Review-Send pattern (shows draft first)
 4. Processes in batches of 20, checking each email exactly once
 
 If both conditions fail (user not addressed AND not mentioned), the email is provably not directed at the user. This is deterministic, not heuristic.
+
+### Triage Tools (Require Subagent Handoff) 🔵
+- `triage_priority_emails` - Identifies high-priority emails, moves to `Secretary/Priority`
+- `triage_remaining_emails` - Processes remaining emails, moves to `Secretary/Waiting`
+
+**Priority Criteria** (for `triage_priority_emails`):
+1. User in To: field with <5 total recipients, OR
+2. User in To: field with <15 recipients AND first/last name mentioned in body
+
+**Workflow**: These tools return email details with signals. Delegate results to a triage subagent for content analysis and action determination.
 
 ---
 

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import List, Optional, Union, Dict, Any
 
@@ -1864,4 +1865,267 @@ def register_tools(
 
         except Exception as e:
             logger.error(f"Error in quick_clean_inbox: {e}")
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @mcp.tool()
+    async def triage_priority_emails(
+        ctx: Context = None,  # type: ignore
+        batch_size: int = 20,
+    ) -> str:
+        """Identify high-priority emails that need immediate attention.
+
+        Criteria for HIGH PRIORITY:
+        1. User in To: field with <5 total recipients, OR
+        2. User in To: field with <15 recipients AND first/last name mentioned in body
+
+        Emails matching these criteria are moved to Secretary/Priority for subagent handling.
+
+        Args:
+            ctx: MCP context
+            batch_size: Emails per batch (default: 20)
+
+        Returns:
+            JSON with priority emails ready for subagent processing
+        """
+        client = get_client_from_context(ctx)
+        config = get_server_config_from_context(ctx)
+        identity = config.identity
+
+        try:
+            priority_folder = "Secretary/Priority"
+            if not client.folder_exists(priority_folder):
+                client.create_folder(priority_folder)
+
+            all_unread_uids = client.search({"UNSEEN": True}, folder="INBOX")
+            if not all_unread_uids:
+                return json.dumps(
+                    {
+                        "status": "success",
+                        "message": "No unread emails to triage",
+                        "total_processed": 0,
+                        "priority_count": 0,
+                        "skipped_count": 0,
+                    },
+                    indent=2,
+                )
+
+            total_to_process = len(all_unread_uids)
+            priority_count = 0
+            skipped_count = 0
+            priority_emails: list[dict[str, Any]] = []
+            skipped_emails: list[dict[str, str]] = []
+
+            uid_list = list(all_unread_uids)
+
+            for batch_start in range(0, len(uid_list), batch_size):
+                batch_uids = uid_list[batch_start : batch_start + batch_size]
+                emails = client.fetch_emails(batch_uids, folder="INBOX")
+
+                for uid, email in emails.items():
+                    to_addresses = [str(addr).lower() for addr in email.to]
+                    total_to_recipients = len(to_addresses)
+
+                    user_in_to = any(
+                        identity.matches_email(addr) for addr in to_addresses
+                    )
+
+                    if not user_in_to:
+                        skipped_count += 1
+                        skipped_emails.append(
+                            {
+                                "uid": str(uid),
+                                "from": str(email.from_),
+                                "subject": email.subject or "(no subject)",
+                                "reason": "not_in_to",
+                            }
+                        )
+                        continue
+
+                    body_text = email.content.get_best_content()
+                    name_in_body = identity.matches_name_part(body_text)
+
+                    is_priority = False
+                    priority_reason = ""
+
+                    if total_to_recipients < 5:
+                        is_priority = True
+                        priority_reason = (
+                            f"direct_small_group ({total_to_recipients} recipients)"
+                        )
+                    elif total_to_recipients < 15 and name_in_body:
+                        is_priority = True
+                        priority_reason = (
+                            f"name_mentioned ({total_to_recipients} recipients)"
+                        )
+
+                    email_summary: dict[str, Any] = {
+                        "uid": str(uid),
+                        "from": str(email.from_),
+                        "subject": email.subject or "(no subject)",
+                        "date": email.date.isoformat() if email.date else None,
+                        "to_count": total_to_recipients,
+                        "snippet": email.content.get_best_content()[:300],
+                    }
+
+                    if is_priority:
+                        email_summary["priority_reason"] = priority_reason
+                        client.move_email(uid, "INBOX", priority_folder)
+                        priority_count += 1
+                        priority_emails.append(email_summary)
+                    else:
+                        skipped_count += 1
+                        skipped_emails.append(
+                            {
+                                "uid": str(uid),
+                                "from": str(email.from_),
+                                "subject": email.subject or "(no subject)",
+                                "reason": f"large_group ({total_to_recipients} recipients, name not mentioned)",
+                            }
+                        )
+
+            return json.dumps(
+                {
+                    "status": "success",
+                    "total_processed": total_to_process,
+                    "priority_count": priority_count,
+                    "skipped_count": skipped_count,
+                    "target_folder": priority_folder,
+                    "priority_emails": priority_emails,
+                    "skipped_emails": skipped_emails[:20],
+                    "next_action": "Delegate priority_emails to triage subagent for content analysis",
+                },
+                indent=2,
+            )
+
+        except Exception as e:
+            logger.error(f"Error in triage_priority_emails: {e}")
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @mcp.tool()
+    async def triage_remaining_emails(
+        ctx: Context = None,  # type: ignore
+        batch_size: int = 20,
+    ) -> str:
+        """Process emails that don't match auto-clean or high-priority criteria.
+
+        These are emails where:
+        - User IS in To: or CC: (so not auto-cleanable), BUT
+        - Don't meet high-priority criteria (large group, name not mentioned)
+
+        Returns email details for subagent to determine appropriate action.
+
+        Args:
+            ctx: MCP context
+            batch_size: Emails per batch (default: 20)
+
+        Returns:
+            JSON with remaining emails for subagent decision-making
+        """
+        client = get_client_from_context(ctx)
+        config = get_server_config_from_context(ctx)
+        identity = config.identity
+
+        try:
+            waiting_folder = "Secretary/Waiting"
+            if not client.folder_exists(waiting_folder):
+                client.create_folder(waiting_folder)
+
+            all_unread_uids = client.search({"UNSEEN": True}, folder="INBOX")
+            if not all_unread_uids:
+                return json.dumps(
+                    {
+                        "status": "success",
+                        "message": "No unread emails to triage",
+                        "total_processed": 0,
+                        "remaining_count": 0,
+                    },
+                    indent=2,
+                )
+
+            total_to_process = len(all_unread_uids)
+            remaining_count = 0
+            remaining_emails: list[dict[str, Any]] = []
+
+            uid_list = list(all_unread_uids)
+
+            for batch_start in range(0, len(uid_list), batch_size):
+                batch_uids = uid_list[batch_start : batch_start + batch_size]
+                emails = client.fetch_emails(batch_uids, folder="INBOX")
+
+                for uid, email in emails.items():
+                    to_addresses = [str(addr).lower() for addr in email.to]
+                    cc_addresses = [str(addr).lower() for addr in (email.cc or [])]
+
+                    user_in_to = any(
+                        identity.matches_email(addr) for addr in to_addresses
+                    )
+                    user_in_cc = any(
+                        identity.matches_email(addr) for addr in cc_addresses
+                    )
+
+                    if not user_in_to and not user_in_cc:
+                        continue
+
+                    total_to_recipients = len(to_addresses)
+                    body_text = email.content.get_best_content()
+                    name_in_body = identity.matches_name_part(body_text)
+
+                    is_high_priority = user_in_to and (
+                        total_to_recipients < 5
+                        or (total_to_recipients < 15 and name_in_body)
+                    )
+
+                    if is_high_priority:
+                        continue
+
+                    vip_senders = [v.lower() for v in config.vip_senders]
+                    sender = str(email.from_).lower()
+                    is_from_vip = any(vip in sender for vip in vip_senders)
+
+                    email_summary: dict[str, Any] = {
+                        "uid": str(uid),
+                        "from": str(email.from_),
+                        "subject": email.subject or "(no subject)",
+                        "date": email.date.isoformat() if email.date else None,
+                        "to_count": total_to_recipients,
+                        "user_in_to": user_in_to,
+                        "user_in_cc": user_in_cc,
+                        "snippet": body_text[:300],
+                        "signals": {
+                            "is_from_vip": is_from_vip,
+                            "name_mentioned": name_in_body,
+                            "has_question": "?" in (email.subject or "")
+                            or bool(
+                                re.search(
+                                    r"\b(can you|could you|please|would you)\b",
+                                    body_text[:500].lower(),
+                                )
+                            ),
+                            "mentions_deadline": bool(
+                                re.search(
+                                    r"\b(eod|asap|urgent|deadline|due|by \w+day)\b",
+                                    body_text[:500].lower(),
+                                )
+                            ),
+                        },
+                    }
+
+                    client.move_email(uid, "INBOX", waiting_folder)
+                    remaining_count += 1
+                    remaining_emails.append(email_summary)
+
+            return json.dumps(
+                {
+                    "status": "success",
+                    "total_processed": total_to_process,
+                    "remaining_count": remaining_count,
+                    "target_folder": waiting_folder,
+                    "remaining_emails": remaining_emails,
+                    "next_action": "Delegate remaining_emails to triage subagent for action determination",
+                },
+                indent=2,
+            )
+
+        except Exception as e:
+            logger.error(f"Error in triage_remaining_emails: {e}")
             return json.dumps({"error": str(e)}, indent=2)
