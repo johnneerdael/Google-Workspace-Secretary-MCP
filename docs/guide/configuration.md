@@ -4,9 +4,51 @@ Complete configuration reference for Google Workspace Secretary MCP.
 
 ## Configuration File
 
-The server requires a `config.yaml` file. Copy `config.sample.yaml` as a starting point.
+The server requires a `config.yaml` file. Copy `config.sample.yaml` as a starting point:
+
+```bash
+mkdir -p config
+cp config.sample.yaml config/config.yaml
+```
+
+::: tip v2.0+ Note
+The `config/` directory now also contains `email_cache.db` (SQLite cache). See [Architecture](/architecture) for details on the local-first caching system.
+:::
 
 ## Required Fields
+
+### Bearer Authentication
+
+::: warning Strongly Recommended
+Enable bearer auth to protect your email from unauthorized access. Without it, anyone who can reach port 8000 has full access to your email.
+:::
+
+```yaml
+bearer_auth:
+  enabled: true
+  token: "your-secure-token-here"
+```
+
+**Generate a unique token:**
+
+::: code-group
+```bash [macOS / Linux]
+uuidgen
+```
+
+```powershell [Windows]
+[guid]::NewGuid().ToString()
+```
+
+```bash [OpenSSL (any system)]
+openssl rand -hex 32
+```
+:::
+
+**Best practices:**
+- Use a UUID or random hex string (not a simple password)
+- Never reuse tokens across services
+- Store securely (don't commit to git)
 
 ### OAuth Mode
 
@@ -123,6 +165,30 @@ calendar:
 ```
 
 **Default**: Calendar tools disabled unless explicitly enabled.
+
+### Cache Configuration (v2.0+)
+
+The SQLite email cache requires no configuration—it's automatic:
+
+```
+config/
+├── config.yaml       # Your configuration
+└── email_cache.db    # Auto-created SQLite cache
+```
+
+**Cache behavior:**
+- **Location**: `config/email_cache.db` (same directory as config.yaml)
+- **Initial sync**: Downloads all emails from configured folders on first start
+- **Incremental sync**: Every 5 minutes, fetches only new/changed emails
+- **Persistence**: Survives container restarts when `config/` is volume-mounted
+
+**Reset the cache:**
+```bash
+rm config/email_cache.db
+# Restart the server to re-sync
+```
+
+See [Architecture](/architecture) for technical details on the caching system.
 
 ### SMTP Configuration
 

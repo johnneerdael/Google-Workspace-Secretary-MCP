@@ -2,6 +2,10 @@
 
 Get up and running with Google Workspace Secretary MCP in minutes.
 
+::: tip What's New in v2.0.0
+The server now uses a **local-first architecture** with SQLite caching. After initial sync, email queries are instant (sub-millisecond). See [Architecture](/architecture) for details.
+:::
+
 ## Prerequisites
 
 Before you begin, ensure you have:
@@ -57,7 +61,30 @@ vip_senders:
   - ceo@company.com
 ```
 
-**3. Create `docker-compose.yml`:**
+**3. Generate a Secure Bearer Token:**
+
+We **strongly recommend** enabling bearer authentication to secure your endpoint:
+
+```bash
+# macOS / Linux
+uuidgen
+
+# Windows (PowerShell)
+[guid]::NewGuid().ToString()
+
+# Or use OpenSSL for a longer token
+openssl rand -hex 32
+```
+
+Add to your `config.yaml`:
+
+```yaml
+bearer_auth:
+  enabled: true
+  token: "your-generated-uuid-here"
+```
+
+**4. Create `docker-compose.yml`:**
 
 ```yaml
 services:
@@ -66,24 +93,31 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./config.yaml:/app/config/config.yaml
+      - ./config:/app/config  # Contains config.yaml AND email_cache.db (v2.0+)
       - ./credentials.json:/app/credentials.json  # For OAuth2
       - ./token.json:/app/token.json  # OAuth2 token (auto-generated)
     environment:
       - WORKSPACE_TIMEZONE=America/Los_Angeles
-      - WORKING_HOURS_START=09:00
-      - WORKING_HOURS_END=17:00
-      - VIP_SENDERS=boss@company.com,ceo@company.com
     restart: always
 ```
 
-**4. Start the server:**
+::: warning Important: Volume Mount for Cache
+In v2.0+, the `config/` directory also contains `email_cache.db` (SQLite cache). Mount the entire directory, not just `config.yaml`, to persist the cache across container restarts.
+:::
+
+**5. Start the server:**
 
 ```bash
 docker-compose up -d
 ```
 
-**5. Authenticate (OAuth2 only):**
+On first start, the server will begin syncing your emails to the local SQLite cache. You can monitor progress in the logs:
+
+```bash
+docker-compose logs -f
+```
+
+**6. Authenticate (OAuth2 only):**
 
 If using OAuth2 (recommended for Gmail), run the authentication flow:
 
@@ -93,7 +127,7 @@ docker exec -it workspace-secretary uv run python -m workspace_secretary.auth_se
 
 Follow the prompts to authorize the application. The `token.json` will be created automatically.
 
-See [Docker Guide](/guide/docker) for advanced Docker configuration.
+See [Docker Guide](/guide/docker) for advanced Docker configuration including cache management and sync behavior.
 
 ### Method 2: Local Development
 

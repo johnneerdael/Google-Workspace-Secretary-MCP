@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-01-09
+
+### Changed
+- **Sync Direction**: Initial sync now processes emails **newest-first** (descending UID order)
+  - Recent emails available within seconds of startup
+  - Can start using MCP immediately while older emails sync in background
+  - No more waiting for full sync to see today's emails
+
+### Documentation
+- **Comprehensive v2.0 documentation overhaul**:
+  - README.md rewritten with v2.0 architecture, bearer auth best practices, UUID generation
+  - config.sample.yaml updated with security recommendations and cache behavior
+  - docs/guide/docker.md completely rewritten for SQLite persistence and sync behavior
+  - docs/guide/security.md added platform-specific UUID generation (macOS/Linux/Windows/OpenSSL)
+  - docs/guide/configuration.md added cache config section
+  - docs/architecture.md expanded with sync direction, instant mutation updates, usability during sync
+  - VitePress nav updated with Architecture link and v2.1.0 version
+
+### Fixed
+- Bearer auth now **strongly recommended** (was optional) with clear UUID generation instructions
+
 ## [2.0.0] - 2026-01-09
 
 ### Added

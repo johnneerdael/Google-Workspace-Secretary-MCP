@@ -8,7 +8,12 @@ New to Google Workspace Secretary MCP? Start here:
 
 - [Installation](/getting-started) - Set up the server with Docker or locally
 - [Configuration](./configuration) - Configure timezone, working hours, and VIP senders
-- [Docker Deployment](./docker) - Production Docker setup
+- [Docker Deployment](./docker) - Production Docker setup with cache persistence
+- [Security](./security) - Bearer auth, SSL, and best practices
+
+## Architecture (v2.0+)
+
+- [Architecture](/architecture) - Local-first design with SQLite caching, IMAP sync protocol
 
 ## Building AI Agents
 

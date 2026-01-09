@@ -14,9 +14,10 @@ export default defineConfig({
       { text: 'Home', link: '/' },
       { text: 'Getting Started', link: '/getting-started' },
       { text: 'Guide', link: '/guide/' },
+      { text: 'Architecture', link: '/architecture' },
       { text: 'API Reference', link: '/api/' },
       {
-        text: 'v1.1.0',
+        text: 'v2.1.0',
         items: [
           { text: 'Changelog', link: 'https://github.com/johnneerdael/Google-Workspace-Secretary-MCP/releases' },
           { text: 'Contributing', link: 'https://github.com/johnneerdael/Google-Workspace-Secretary-MCP' }
@@ -31,6 +32,7 @@ export default defineConfig({
           items: [
             { text: 'Introduction', link: '/guide/' },
             { text: 'Configuration', link: '/guide/configuration' },
+            { text: 'Security', link: '/guide/security' },
             { text: 'OAuth Workaround', link: '/guide/oauth_workaround' },
             { text: 'Docker Deployment', link: '/guide/docker' },
             { text: 'Agent Patterns', link: '/guide/agents' },

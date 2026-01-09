@@ -78,3 +78,5 @@ docs/.vitepress/dist/
 docs/.vitepress/cache/
 docs/node_modules/
 .local/
+email_cache.db
+config/email_cache.db

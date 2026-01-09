@@ -156,7 +156,7 @@ class EmailCache:
 
         batch_size = 50
         synced = 0
-        uid_list = list(all_uids)
+        uid_list = sorted(all_uids, reverse=True)
 
         with self._get_connection() as conn:
             for batch_start in range(0, total, batch_size):

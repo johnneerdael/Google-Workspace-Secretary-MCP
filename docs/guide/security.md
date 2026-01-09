@@ -4,7 +4,41 @@ This guide covers securing your Google Workspace Secretary MCP server for remote
 
 ## Bearer Token Authentication
 
+::: danger Critical Security
+Without bearer authentication, **anyone who can reach port 8000 has full access to your email**. Always enable it in production.
+:::
+
 Enable bearer token authentication to require clients to authenticate before using the MCP server.
+
+### Generating a Secure Token
+
+Use a cryptographically random token, not a simple password:
+
+::: code-group
+```bash [macOS / Linux]
+# Generate a UUID (recommended)
+uuidgen
+# Output: A1B2C3D4-E5F6-7890-ABCD-EF1234567890
+```
+
+```powershell [Windows PowerShell]
+# Generate a UUID
+[guid]::NewGuid().ToString()
+# Output: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+```
+
+```bash [OpenSSL (any system)]
+# Generate a 32-byte hex string (64 characters)
+openssl rand -hex 32
+# Output: 7f8a9b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a
+```
+
+```python [Python]
+import uuid
+print(str(uuid.uuid4()))
+# Output: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+```
+:::
 
 ### Configuration
 
@@ -13,14 +47,15 @@ Add to your `config.yaml`:
 ```yaml
 bearer_auth:
   enabled: true
-  token: "your-secret-token-here"  # Optional: auto-generated if not set
+  token: "your-generated-uuid-here"
 ```
 
-If `token` is not specified, a random token is generated on server startup and logged:
-
-```
-INFO - Bearer authentication enabled. Token: aBcDeFgHiJkLmNoPqRsTuVwXyZ...
-```
+::: tip Best Practices
+- **Use a UUID or random hex** — not a simple password
+- **Never reuse tokens** — each service should have a unique token
+- **Keep it secret** — don't commit `config.yaml` to git (it's in `.gitignore`)
+- **Rotate periodically** — change the token if you suspect compromise
+:::
 
 ### Client Configuration
 
@@ -110,11 +145,12 @@ Caddy automatically obtains SSL certificates from Let's Encrypt.
 ## Security Checklist
 
 - [ ] Enable `bearer_auth` in config.yaml
-- [ ] Use a strong, randomly generated token (32+ characters)
-- [ ] Deploy behind Traefik or Caddy for SSL
+- [ ] Use a UUID or random hex token (not a simple password)
+- [ ] Deploy behind Traefik or Caddy for SSL in production
 - [ ] Configure DNS to point to your server
 - [ ] Restrict firewall to ports 80/443 only
 - [ ] Keep config.yaml and tokens out of version control
+- [ ] Protect `email_cache.db` — it contains your email data (v2.0+)
 
 ---
 

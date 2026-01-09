@@ -2,6 +2,10 @@
 
 Email and search tools for reading, searching, and managing emails.
 
+::: tip v2.0+ Performance
+Read operations now query the local SQLite cache first, providing **sub-millisecond response times**. The cache is kept in sync with IMAP via background sync every 5 minutes. See [Architecture](/architecture) for details.
+:::
+
 ::: tip OAUTH_MODE Affects Email Tools
 The backend implementation varies based on your `oauth_mode` setting:
 - **`api` mode** (default): Uses Gmail REST API for all operations

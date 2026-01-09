@@ -1,14 +1,34 @@
 # Google Workspace Secretary MCP Configuration
 # Complete example with all available options
 
+# =============================================================================
+# SECURITY: Bearer Token Authentication (STRONGLY RECOMMENDED)
+# =============================================================================
+# Enable bearer auth to secure your MCP endpoint. Without this, anyone who can
+# reach port 8000 can access your email.
+#
+# Generate a unique token using one of these commands:
+#   macOS/Linux:  uuidgen
+#   Windows:      [guid]::NewGuid().ToString()
+#   Any system:   openssl rand -hex 32
+#
+bearer_auth:
+  enabled: true  # Set to true in production!
+  token: "REPLACE-WITH-YOUR-GENERATED-UUID"
+  # Example: token: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+# =============================================================================
 # REQUIRED: OAuth Mode
+# =============================================================================
 # Controls which APIs are used for email operations:
 # - "api" (default): Uses Gmail REST API. Requires your own GCP OAuth credentials.
 # - "imap": Uses IMAP/SMTP. Works with third-party OAuth credentials (Thunderbird, GNOME).
 # Calendar features work in both modes. Can also be set via OAUTH_MODE env var.
 oauth_mode: api
 
+# =============================================================================
 # REQUIRED: User Identity Configuration
+# =============================================================================
 # Used to detect if emails are addressed directly to you
 identity:
   email: your-email@gmail.com
@@ -17,7 +37,9 @@ identity:
     - alternate@gmail.com
     - work@company.com
 
+# =============================================================================
 # REQUIRED: IMAP/Gmail Configuration
+# =============================================================================
 imap:
   host: imap.gmail.com
   port: 993
@@ -30,19 +52,25 @@ imap:
     client_secret: YOUR_CLIENT_SECRET
     # Tokens will be auto-generated during auth_setup
 
+# =============================================================================
 # REQUIRED: Timezone Configuration
+# =============================================================================
 # Use IANA timezone format (e.g., America/Los_Angeles, Europe/London, Asia/Tokyo)
 # This determines how calendar events and working hours are interpreted
 timezone: America/Los_Angeles
 
+# =============================================================================
 # REQUIRED: Working Hours Configuration
+# =============================================================================
 # Used by scheduling tools to suggest meeting times only within your working hours
 working_hours:
   start: "09:00"  # Must be in HH:MM format (24-hour)
   end: "17:00"    # Must be in HH:MM format (24-hour)
   workdays: [1, 2, 3, 4, 5]  # 1=Monday, 7=Sunday
 
+# =============================================================================
 # REQUIRED: VIP Senders
+# =============================================================================
 # Emails from these addresses will be flagged as high-priority in daily briefings
 # Use exact email addresses (case-insensitive)
 vip_senders:
@@ -50,7 +78,9 @@ vip_senders:
   - ceo@company.com
   - important-client@example.com
 
-# OPTIONAL: Restrict which email folders the MCP can access
+# =============================================================================
+# OPTIONAL: Restrict Email Folders
+# =============================================================================
 # If not specified, all folders are accessible
 allowed_folders:
   - INBOX
@@ -58,14 +88,21 @@ allowed_folders:
   - Archive
   - Important
 
+# =============================================================================
 # OPTIONAL: Calendar Configuration
+# =============================================================================
 calendar:
   enabled: true
   verified_client: your-email@gmail.com
 
-# OPTIONAL: Bearer Token Authentication
-# Enable to require authentication for MCP clients connecting via HTTP
-# Recommended when exposing the server to the internet
-bearer_auth:
-  enabled: false
-  # token: "your-secret-token"  # If not set, a random token is generated on startup
+# =============================================================================
+# OPTIONAL: Cache Configuration (v2.0+)
+# =============================================================================
+# The SQLite email cache is stored at: config/email_cache.db
+# This is automatically managed - no configuration needed.
+# To reset the cache, simply delete the file and restart the server.
+#
+# Cache behavior:
+# - Initial sync: Downloads all emails from configured folders
+# - Incremental sync: Every 5 minutes, fetches only new/changed emails
+# - The cache survives container restarts (persisted in config/ volume)

@@ -17,6 +17,10 @@ hero:
       link: https://github.com/johnneerdael/Google-Workspace-Secretary-MCP
 
 features:
+  - icon: ⚡
+    title: Local-First Architecture
+    details: v2.0 brings SQLite-backed instant reads. Email queries hit local cache instead of IMAP—sub-millisecond response times with background sync.
+    
   - icon: 🤖
     title: AI-Native Design
     details: Built specifically for AI assistants like Claude via Model Context Protocol (MCP). Provides intelligent tools that scaffold complex email and calendar workflows.
@@ -29,10 +33,6 @@ features:
     title: Timezone-Aware Scheduling
     details: All calendar operations respect your configured timezone and working hours. Automatically suggests meeting times that fit your schedule.
     
-  - icon: 📧
-    title: Advanced Email Processing
-    details: Bulk triage with token-efficient truncation, full thread analysis, and natural language search across your entire inbox history.
-    
   - icon: 📄
     title: Document Intelligence
     details: Extract and analyze text from PDF, DOCX, TXT, and LOG attachments directly in the AI's context. No manual downloads needed.
@@ -40,14 +40,6 @@ features:
   - icon: 🔒
     title: Human-in-the-Loop Safety
     details: Built-in safety patterns ensure all mutations (sending emails, deleting, moving) require explicit user confirmation.
-    
-  - icon: 📅
-    title: Calendar Orchestration
-    details: Check availability, parse meeting invites, and draft professional responses. All within your working hours and timezone.
-    
-  - icon: 🐳
-    title: Production-Ready
-    details: Docker images published on every release. OAuth2 support, environment variable configuration, and comprehensive logging.
 ---
 
 ## Quick Start
@@ -62,14 +54,28 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./config.yaml:/app/config/config.yaml
-      - ./credentials.json:/app/credentials.json
+      - ./config:/app/config  # Contains config.yaml and email_cache.db
     environment:
       - WORKSPACE_TIMEZONE=America/Los_Angeles
-      - WORKING_HOURS_START=09:00
-      - WORKING_HOURS_END=17:00
-      - VIP_SENDERS=boss@company.com,ceo@company.com
     restart: always
+```
+
+**Important**: Generate a unique bearer token for security:
+
+```bash
+# macOS/Linux
+uuidgen
+
+# Windows PowerShell
+[guid]::NewGuid().ToString()
+```
+
+Add to your `config/config.yaml`:
+
+```yaml
+bearer_auth:
+  enabled: true
+  token: "your-generated-uuid-here"
 ```
 
 Then start with: `docker-compose up -d`
@@ -80,6 +86,7 @@ See [Getting Started](/getting-started) for complete installation instructions.
 
 Traditional email clients are built for humans. **Google Workspace Secretary MCP** is built for AI assistants.
 
+- **Instant reads**: SQLite cache means sub-millisecond email queries (v2.0)
 - **Token-efficient**: Bulk email fetching with smart truncation (700 chars) for fast triage
 - **Context-rich**: Full thread history, attachment content, and calendar context in one tool call
 - **Intelligence signals**: VIP detection, urgency markers, question detection—not hardcoded decisions
@@ -115,6 +122,17 @@ The AI:
 3. Parses and presents the total
 :::
 
+## What's New in v2.0.0
+
+**Local-First Architecture** — The server now operates like a proper email client (Thunderbird, Apple Mail):
+
+- ⚡ **SQLite Cache**: Email queries hit local database instead of IMAP—instant response times
+- 🔄 **Background Sync**: Continuous incremental sync keeps your cache fresh (every 5 minutes)
+- 💾 **Persistent Storage**: Cache survives restarts; only fetches new emails after initial sync
+- 📊 **RFC-Compliant**: Proper UIDVALIDITY/UIDNEXT tracking per RFC 3501/4549
+
+See the [Architecture Documentation](/architecture) for technical details.
+
 ## What's New in v1.1.0
 
 - ✅ **Dual OAuth Mode** - `oauth_mode: api` (Gmail REST) or `oauth_mode: imap` (IMAP/SMTP)
@@ -128,10 +146,8 @@ The AI:
 - ✅ **Working hours constraints** - Meeting suggestions respect your work schedule
 - ✅ **Intelligent email signals** - 5 ML-ready signals for AI-driven prioritization
 - ✅ **VIP sender detection** - Configurable list of priority email addresses
-- ✅ **Enhanced daily briefings** - Combined calendar + email intelligence in one call
-- ✅ **Environment variable support** - Easy configuration via Docker ENV vars
 
-[See Migration Guide](/guide/configuration#migration-from-v01x) for upgrading from v0.1.x.
+[See Migration Guide](/guide/configuration#migration-from-v01x) for upgrading from earlier versions.
 
 ## Community & Support
 

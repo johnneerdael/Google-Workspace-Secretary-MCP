@@ -26,6 +26,7 @@ The difference: instead of a GUI, the interface is MCP—enabling AI agents to i
 ┌─────────────────────────────────────────────────────────────┐
 │     Full Sync (first run) or Incremental Sync (subsequent)   │
 │              SQLite ← IMAP Server                            │
+│         ** NEWEST EMAILS FIRST (descending UID) **           │
 └─────────────────────┬───────────────────────────────────────┘
                       ▼
 ┌─────────────────────────────────────────────────────────────┐
@@ -33,6 +34,33 @@ The difference: instead of a GUI, the interface is MCP—enabling AI agents to i
 │    Reads → SQLite (instant)    Writes → IMAP + SQLite       │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+## Sync Direction: Newest First
+
+::: tip Immediate Usability
+The sync processes emails in **descending UID order** (newest first). This means your most recent emails are available within seconds of startup, even while older emails are still syncing in the background.
+:::
+
+### Why Newest First?
+
+| Approach | Behavior | Usability |
+|----------|----------|-----------|
+| Oldest first | 2015 emails sync before today's | Must wait for full sync to see recent mail |
+| **Newest first** | Today's emails sync first | Can start using MCP almost immediately |
+
+### Using MCP During Initial Sync
+
+You can start using the MCP server **immediately** after startup. Be aware:
+
+| Query Type | During Sync | Notes |
+|------------|-------------|-------|
+| Recent emails (last week) | ✅ Available quickly | First ~500-1000 emails sync in minutes |
+| Search by sender | ⚠️ Partial results | Only synced emails are searchable |
+| Full text search | ⚠️ Partial results | Older emails may not appear yet |
+| Mark as read/move | ✅ Works immediately | Mutations work on any synced email |
+| Send email | ✅ Always works | Doesn't depend on cache |
+
+**No risk of data loss or corruption** — you simply may not see older emails until they're synced.
 
 ## SQLite Cache Architecture
 
@@ -198,9 +226,12 @@ Folder state is saved after each batch. If the container restarts mid-sync:
 2. Sync resumes from `uidnext` (last successfully synced UID + 1)
 3. Already-cached emails are not re-downloaded
 
-### Periodic Sync
+### Periodic Sync (5 Minutes)
 
-After initial sync completes, incremental sync runs every 5 minutes:
+After initial sync completes, incremental sync runs every 5 minutes to catch:
+- New emails received from external senders
+- Changes made by other email clients
+- Server-side deletions
 
 ```python
 while True:
@@ -208,17 +239,32 @@ while True:
     self._run_sync()
 ```
 
+::: info Why 5 Minutes?
+The 5-minute interval balances freshness with server load. For emails you **send** or **mutate** through MCP, the cache updates instantly. The periodic sync only matters for external changes (emails from other people, or changes made in Gmail web/mobile).
+:::
+
 ## Cache Invalidation
+
+### Instant Updates on Mutations
+
+::: tip No 5-Minute Wait
+When you perform a mutation (mark as read, move, delete), the **cache is updated immediately** — you don't wait for the next 5-minute sync cycle.
+:::
 
 All mutation tools follow this pattern:
 
 ```
-1. Execute IMAP operation
-2. If successful, update SQLite cache
+1. Execute IMAP operation (server-side)
+2. If successful, update SQLite cache immediately
 3. Return result to caller
 ```
 
-### Tools with Cache Invalidation
+This means:
+- Mark an email as read → It's instantly reflected in `get_unread_messages`
+- Move an email to a folder → It's instantly searchable in the new folder
+- Delete an email → It's instantly removed from all queries
+
+### Tools with Instant Cache Updates
 
 | Tool | IMAP Operation | Cache Update |
 |------|----------------|--------------|
