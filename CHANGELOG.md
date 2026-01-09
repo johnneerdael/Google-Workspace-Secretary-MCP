@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.2.2] - 2026-01-10
+
+### Fixed
+
+- **Database Initialization**: Engine now calls `database.initialize()` after `create_database()`
+  - Fixes "Database not initialized. Call initialize() first" error during sync
+- **PostgreSQL Dependencies**: Docker image now includes `psycopg[binary]` and `psycopg-pool`
+  - Added `postgres` optional dependency group in pyproject.toml
+  - Dockerfile uses `--extra postgres` to install PostgreSQL drivers
+
+### Added
+
+- **Sync Logging**: INFO-level logs for sync operations
+  - "Synced N new emails from FOLDER" on new email inserts
+  - "Updated flags for N emails in FOLDER" on CONDSTORE flag changes
+
+### Documentation
+
+- **OAuth Setup Simplified**: Removed outdated `--token-output` and `--config` flags from examples
+  - Token always saves to `/app/config/token.json` (hardcoded)
+  - Config always at `/app/config/config.yaml`
+- **Docker Guide Overhauled**: Added PostgreSQL setup, fixed OAuth examples
+- **Threading Docs Updated**: Deprecated RFC 5256 threading in favor of Gmail's X-GM-THRID extension
+- **Architecture Deep Dive**: Added comprehensive IMAP client section covering CONDSTORE, IDLE, Gmail extensions
+- **Renamed /api/ to /tools/**: Better reflects MCP tool documentation
+
 ## [4.2.1] - 2026-01-09
 
 ### Fixed

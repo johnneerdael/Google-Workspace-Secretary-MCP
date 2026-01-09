@@ -5,8 +5,8 @@ Deploy Gmail Secretary MCP with Docker for persistent email caching and reliable
 ## Prerequisites
 
 - Docker and Docker Compose installed
-- A `config.yaml` file prepared (see [Configuration](./configuration))
-- OAuth tokens in `token.json` (see [Getting Started](/getting-started))
+- Google Cloud OAuth credentials (client ID + secret) or Gmail App Password
+- Basic familiarity with YAML configuration
 
 ## Quick Start
 
@@ -20,7 +20,7 @@ cd Google-Workspace-Secretary-MCP
 mkdir -p config
 
 # Copy sample config
-cp config.sample.yaml config.yaml
+cp config.sample.yaml config/config.yaml
 ```
 
 **2. Generate a secure bearer token:**
@@ -31,11 +31,7 @@ uuidgen
 ```
 
 ```bash [Linux]
-# uuidgen (install uuid-runtime if not available)
-uuidgen
-
-# Or use OpenSSL (always available)
-openssl rand -hex 32
+uuidgen  # or: openssl rand -hex 32
 ```
 
 ```powershell [Windows]
@@ -43,18 +39,7 @@ openssl rand -hex 32
 ```
 :::
 
-::: tip Linux Note
-On some Linux distributions, `uuidgen` requires the `uuid-runtime` package:
-```bash
-# Debian/Ubuntu
-sudo apt install uuid-runtime
-
-# RHEL/CentOS/Fedora  
-sudo dnf install util-linux
-```
-:::
-
-Add to `config.yaml`:
+Add to `config/config.yaml`:
 
 ```yaml
 bearer_auth:
@@ -62,25 +47,108 @@ bearer_auth:
   token: "your-generated-uuid-here"
 ```
 
-**3. Run OAuth setup locally first:**
-
-```bash
-uv run python -m workspace_secretary.auth_setup \
-  --config config.yaml \
-  --token-output token.json
-```
-
-**4. Start the service:**
+**3. Start the container:**
 
 ```bash
 docker compose up -d
 ```
 
-**5. Monitor initial sync:**
+**4. Run authentication setup:**
+
+```bash
+# Option 1: OAuth2 (recommended)
+docker exec -it workspace-secretary uv run python -m workspace_secretary.auth_setup \
+  --client-id='YOUR_CLIENT_ID.apps.googleusercontent.com' \
+  --client-secret='YOUR_CLIENT_SECRET'
+
+# Option 2: App Password (no Google Cloud project needed)
+docker exec -it workspace-secretary uv run python -m workspace_secretary.app_password
+```
+
+::: tip Simplified Auth (v4.2.2+)
+Tokens automatically save to `/app/config/token.json`. No `--token-output` flag needed.
+:::
+
+**5. Monitor sync progress:**
 
 ```bash
 docker compose logs -f
 ```
+
+You should see:
+```
+INFO - Synced 50 new emails from INBOX
+INFO - Embedding 50 emails from INBOX
+```
+
+## Database Backends
+
+### SQLite (Default)
+
+Zero configuration, perfect for single-user deployments:
+
+```yaml
+database:
+  backend: sqlite
+  path: /app/config/email_cache.db
+```
+
+### PostgreSQL (Recommended for Production)
+
+Required for semantic search with pgvector:
+
+```yaml
+database:
+  backend: postgres
+  host: postgres
+  port: 5432
+  name: secretary
+  user: secretary
+  password: ${POSTGRES_PASSWORD}
+  
+  embeddings:
+    enabled: true
+    model: text-embedding-3-small
+    dimensions: 1536
+```
+
+**Docker Compose with PostgreSQL:**
+
+```yaml
+# docker-compose.yml
+services:
+  workspace-secretary:
+    image: ghcr.io/johnneerdael/google-workspace-secretary-mcp:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config:/app/config
+    environment:
+      - POSTGRES_PASSWORD=your-secure-password
+      - OPENAI_API_KEY=sk-...  # For embeddings
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      - POSTGRES_USER=secretary
+      - POSTGRES_PASSWORD=your-secure-password
+      - POSTGRES_DB=secretary
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U secretary"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+```
+
+See [Semantic Search](./semantic-search) for embedding configuration details.
 
 ## Volume Mounts
 
@@ -88,43 +156,40 @@ The container requires a single volume mount:
 
 | Host Path | Container Path | Purpose |
 |-----------|----------------|---------|
-| `./config/` | `/app/config/` | Configuration, tokens, and SQLite cache |
+| `./config/` | `/app/config/` | Configuration, tokens, and cache |
 
 ```yaml
-# ✅ Correct - single folder mount
 volumes:
   - ./config:/app/config
 ```
 
-Your `config/` folder should contain:
+Your `config/` folder contains:
 - `config.yaml` - Configuration file
 - `token.json` - OAuth tokens (created by auth setup)
-- `email_cache.db` - SQLite cache (created automatically)
+- `email_cache.db` - SQLite cache (if using SQLite backend)
 
-::: warning Do NOT use multiple conflicting mounts
+::: warning Single folder mount only
 ```yaml
-# ❌ Wrong - conflicting mounts cause issues
+# ✅ Correct
 volumes:
-  - ./config.yaml:/app/config/config.yaml:ro  # This conflicts with folder mount
-  - ./config:/app/config                       # Folder mount overwrites file mount
+  - ./config:/app/config
+
+# ❌ Wrong - conflicting mounts
+volumes:
+  - ./config.yaml:/app/config/config.yaml:ro
+  - ./config:/app/config
 ```
 :::
 
-**Why a single folder mount?**
-- Simpler configuration
-- No conflicting mount issues
-- All state in one place for easy backup
-
-## Email Cache Behavior
+## Sync Behavior
 
 ### Initial Sync
 
-On first startup, the server syncs your mailbox to SQLite:
-
-1. Connects to Gmail IMAP
+On first startup:
+1. Connects to Gmail IMAP with CONDSTORE support
 2. Downloads email metadata and bodies in batches
-3. Stores in `config/email_cache.db`
-4. Progress logged: `Syncing INBOX: 500/2500 emails...`
+3. Stores in database (SQLite or PostgreSQL)
+4. Generates embeddings if enabled
 
 **Sync times by mailbox size:**
 | Emails | Time |
@@ -135,89 +200,78 @@ On first startup, the server syncs your mailbox to SQLite:
 
 ### Incremental Sync
 
-After initial sync, background sync runs every 5 minutes:
-- Checks for new emails via UIDNEXT
-- Downloads only new messages
-- Removes deleted emails
-- Typical sync: < 1 second
+After initial sync:
+- IDLE push notifications for real-time updates
+- CONDSTORE for efficient flag change detection
+- UIDNEXT tracking for new message detection
+- Typical incremental sync: < 1 second
 
 ### Cache Management
 
-**Reset the cache** (re-download all emails):
+**Reset the cache:**
 ```bash
 docker compose stop
-rm config/email_cache.db
+rm config/email_cache.db  # SQLite only
 docker compose start
 ```
 
-**View cache stats**:
+**View sync stats (SQLite):**
 ```bash
 docker exec workspace-secretary sqlite3 /app/config/email_cache.db \
   "SELECT folder, COUNT(*) as emails FROM emails GROUP BY folder;"
 ```
 
-## Authentication in Docker
+## Authentication
 
-### OAuth Setup Inside Container
+### OAuth2 Setup
 
-If you didn't run OAuth setup locally, run it inside the container:
+Run inside the container after it's started:
 
 ```bash
-docker exec -it workspace-secretary \
-  python -m workspace_secretary.auth_setup \
-  --config /app/config/config.yaml \
-  --token-output /app/config/token.json
+docker exec -it workspace-secretary uv run python -m workspace_secretary.auth_setup \
+  --client-id='YOUR_CLIENT_ID.apps.googleusercontent.com' \
+  --client-secret='YOUR_CLIENT_SECRET'
 ```
 
-The `--manual` flag is default: paste the redirect URL rather than needing localhost access.
+The manual OAuth flow:
+1. Open the printed authorization URL in your browser
+2. Login and approve access
+3. Copy the **full redirect URL** (even if page doesn't load)
+4. Paste when prompted
+5. Tokens saved automatically to `/app/config/token.json`
+
+### App Password Setup
+
+Alternative without Google Cloud project:
+
+```bash
+docker exec -it workspace-secretary uv run python -m workspace_secretary.app_password
+```
+
+Enter your Gmail address and [App Password](https://myaccount.google.com/apppasswords) when prompted.
 
 ### Token Refresh
 
-Tokens auto-refresh. If refresh fails:
+Tokens auto-refresh. If refresh fails, re-run auth setup and restart:
 
 ```bash
-# Re-run auth setup
-docker exec -it workspace-secretary \
-  python -m workspace_secretary.auth_setup \
-  --config /app/config/config.yaml \
-  --token-output /app/config/token.json
-
-# Restart container
+docker exec -it workspace-secretary uv run python -m workspace_secretary.auth_setup \
+  --client-id='...' --client-secret='...'
 docker compose restart
 ```
 
 ## Environment Variables
 
-Override settings via environment variables:
-
 | Variable | Purpose | Default |
 |----------|---------|---------|
+| `POSTGRES_PASSWORD` | PostgreSQL password | Required for postgres backend |
+| `OPENAI_API_KEY` | Embeddings API key | Required if embeddings enabled |
 | `WORKSPACE_TIMEZONE` | IANA timezone | From config.yaml |
 | `LOG_LEVEL` | Logging verbosity | `INFO` |
-| `WORKING_HOURS_START` | Working hours start | From config.yaml |
-| `WORKING_HOURS_END` | Working hours end | From config.yaml |
-
-Example:
-```yaml
-environment:
-  - WORKSPACE_TIMEZONE=Europe/London
-  - LOG_LEVEL=DEBUG
-```
-
-## Health Checks
-
-The container includes health checks:
-
-```bash
-# Check health status
-docker inspect workspace-secretary --format='{{.State.Health.Status}}'
-```
 
 ## Production Recommendations
 
 ### Resource Limits
-
-For large mailboxes (10k+ emails):
 
 ```yaml
 services:
@@ -240,8 +294,6 @@ services:
 
 ### Log Rotation
 
-Prevent disk fill:
-
 ```yaml
 services:
   workspace-secretary:
@@ -252,48 +304,6 @@ services:
         max-file: "3"
 ```
 
-## Reverse Proxy Setup
-
-### Traefik
-
-```yaml
-# docker-compose.traefik.yml
-services:
-  workspace-secretary:
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.secretary.rule=Host(`secretary.example.com`)"
-      - "traefik.http.routers.secretary.tls.certresolver=letsencrypt"
-      - "traefik.http.services.secretary.loadbalancer.server.port=8000"
-```
-
-### Caddy
-
-```yaml
-# docker-compose.caddy.yml with Caddyfile
-secretary.example.com {
-    reverse_proxy workspace-secretary:8000
-}
-```
-
-::: warning Caddy Let's Encrypt Caveats
-Caddy's automatic HTTPS has requirements:
-
-**Must be true:**
-- Ports 80/443 reachable from internet (HTTP-01 challenge)
-- DNS A/AAAA record points to your server
-- No firewall blocking ACME challenges
-
-**Common failures:**
-- ISP blocks port 80
-- Behind NAT without port forwarding
-- CDN/proxy interfering with challenges
-- IPv6 AAAA record exists but IPv6 routing broken
-
-**For wildcards or DNS challenges:**
-See [Caddy DNS Challenge documentation](https://caddyserver.com/docs/automatic-https#dns-challenge) for provider-specific setup.
-:::
-
 ## Connecting Clients
 
 The server exposes a **Streamable HTTP** endpoint at:
@@ -302,24 +312,31 @@ The server exposes a **Streamable HTTP** endpoint at:
 http://localhost:8000/mcp
 ```
 
-With bearer auth:
+With bearer auth header:
 ```
 Authorization: Bearer your-generated-uuid-here
 ```
 
 See the [Client Setup Guide](./clients) for Claude Desktop, VS Code, Cursor, and other MCP clients.
 
-## PostgreSQL (Semantic Search)
-
-For AI-powered semantic search, use PostgreSQL with pgvector:
-
-```bash
-docker compose -f docker-compose.postgres.yml up -d
-```
-
-See [Semantic Search](./semantic-search) for configuration details.
-
 ## Troubleshooting
+
+### "Database not initialized" error
+
+Upgrade to v4.2.2+ which fixes this issue.
+
+### "Missing client_id or client_secret"
+
+Re-run auth setup with v4.2.1+ which saves credentials in token.json.
+
+### PostgreSQL connection refused
+
+Ensure postgres service is healthy before secretary starts:
+```yaml
+depends_on:
+  postgres:
+    condition: service_healthy
+```
 
 ### Sync appears stuck
 
@@ -332,37 +349,10 @@ Common causes:
 - Network connectivity issues
 - Gmail rate limiting
 
-### Cache corruption
-
-```bash
-docker compose stop
-rm config/email_cache.db
-docker compose start
-```
-
 ### High memory during initial sync
 
-Large mailboxes use more memory during sync. This normalizes after completion. Increase container memory limits if needed.
-
-### Bearer auth not working
-
-```yaml
-bearer_auth:
-  enabled: true
-  token: "exact-token-from-client-config"
-```
-
-Token must match exactly (case-sensitive).
-
-### Container can't write token.json
-
-Ensure `token.json` exists and is writable:
-
-```bash
-touch token.json
-chmod 644 token.json
-```
+Large mailboxes use more memory during sync. Increase container memory limits if needed.
 
 ---
 
-**Next**: Configure [Reverse Proxy Security](./security) for production deployments.
+**Next**: Configure [Semantic Search](./semantic-search) for AI-powered email discovery.

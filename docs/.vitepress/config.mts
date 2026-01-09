@@ -15,9 +15,9 @@ export default defineConfig({
       { text: 'Getting Started', link: '/getting-started' },
       { text: 'Guide', link: '/guide/' },
       { text: 'Architecture', link: '/architecture' },
-      { text: 'MCP Tools', link: '/api/' },
+      { text: 'MCP Tools', link: '/tools/' },
       {
-        text: 'v4.2.1',
+        text: 'v4.2.2',
         items: [
           { text: 'Changelog', link: 'https://github.com/johnneerdael/gmail-secretary-mcp/releases' },
           { text: 'Contributing', link: 'https://github.com/johnneerdael/gmail-workspace-mcp' }
@@ -43,14 +43,14 @@ export default defineConfig({
           ]
         }
       ],
-      '/api/': [
+      '/tools/': [
         {
           text: 'MCP Tools Reference',
           items: [
-            { text: 'Overview', link: '/api/' },
-            { text: 'Email Tools', link: '/api/email' },
-            { text: 'Calendar Tools', link: '/api/calendar' },
-            { text: 'Intelligence Tools', link: '/api/intelligence' }
+            { text: 'Overview', link: '/tools/' },
+            { text: 'Email Tools', link: '/tools/email' },
+            { text: 'Calendar Tools', link: '/tools/calendar' },
+            { text: 'Intelligence Tools', link: '/tools/intelligence' }
           ]
         }
       ]

@@ -124,6 +124,15 @@ The AI:
 3. Parses and presents the total
 :::
 
+## What's New in v4.2.2
+
+**Bug Fixes & Documentation Overhaul**:
+
+- 🔧 **Database Init Fix**: Engine now properly initializes database connection pool
+- 🐘 **PostgreSQL Support**: Docker image includes psycopg drivers out of the box
+- 📝 **Sync Logging**: INFO-level logs show sync progress ("Synced N emails from INBOX")
+- 📚 **Docs Refresh**: Simplified OAuth setup, added PostgreSQL guide, updated threading docs
+
 ## What's New in v4.2.1
 
 **Authentication UX Improvements** — Easier setup with better error messages:

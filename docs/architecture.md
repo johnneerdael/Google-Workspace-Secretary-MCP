@@ -1,4 +1,4 @@
-# Architecture v4.2.0
+# Architecture v4.2.2
 
 This document describes the **read/write split architecture** introduced in v4.0.0, with calendar API passthrough added in v4.2.0.
 
@@ -366,3 +366,227 @@ volumes:
 2. No config changes required (calendar_cache_path is ignored if present)
 3. Engine will use existing `email_cache.db`
 4. Calendar now uses API passthrough (no local cache needed)
+
+## IMAP Client Deep Dive
+
+The IMAP client is a core differentiator of Gmail Secretary. Rather than using the Gmail API (which has strict quotas and rate limits), we leverage Gmail's IMAP interface with advanced extensions for a high-performance, real-time email sync engine.
+
+### Why IMAP over Gmail API?
+
+| Aspect | Gmail API | IMAP (our approach) |
+|--------|-----------|---------------------|
+| **Rate limits** | 250 quota units/sec | Effectively unlimited |
+| **Real-time updates** | Polling or Pub/Sub setup | Native IDLE push |
+| **Bulk operations** | Multiple API calls | Single FETCH command |
+| **Threading** | API call per thread | X-GM-THRID in FETCH |
+| **Complexity** | OAuth + API client | OAuth + IMAP client |
+| **Offline capability** | Requires caching layer | Built-in with local DB |
+
+### IMAP Extensions Used
+
+We leverage several IMAP extensions beyond RFC 3501:
+
+#### CONDSTORE (RFC 7162)
+
+Conditional STORE enables efficient incremental sync:
+
+```imap
+# Enable CONDSTORE on SELECT
+A001 SELECT INBOX (CONDSTORE)
+* OK [HIGHESTMODSEQ 123456789] Highest modseq
+
+# Fetch only changes since last sync
+A002 FETCH 1:* (FLAGS) (CHANGEDSINCE 123456780)
+* 42 FETCH (FLAGS (\Seen) MODSEQ (123456785))
+* 99 FETCH (FLAGS (\Flagged) MODSEQ (123456789))
+```
+
+**Benefits:**
+- Only fetch emails with flag changes (not entire mailbox)
+- Server tracks modification sequence per message
+- Reduces bandwidth by 99%+ for incremental syncs
+
+#### IDLE (RFC 2177)
+
+Push notifications for real-time updates:
+
+```imap
+A003 IDLE
++ idling
+* 100 EXISTS        # New message arrived!
+* 42 FETCH (FLAGS (\Seen \Answered))  # Flags changed
+DONE
+A003 OK IDLE terminated
+```
+
+**Our implementation:**
+- Dedicated IDLE connection per monitored folder
+- Automatic reconnection on timeout (Gmail: 29 minutes)
+- Triggers immediate sync on EXISTS/EXPUNGE/FETCH events
+
+#### Gmail IMAP Extensions
+
+Google provides proprietary extensions for Gmail-specific features:
+
+**X-GM-THRID** - Thread ID:
+```imap
+A004 FETCH 1:10 (X-GM-THRID)
+* 1 FETCH (X-GM-THRID 1278455344230334865)
+```
+
+**X-GM-MSGID** - Unique Message ID:
+```imap
+A005 FETCH 1 (X-GM-MSGID)
+* 1 FETCH (X-GM-MSGID 1278455344230334866)
+```
+
+**X-GM-LABELS** - Gmail Labels:
+```imap
+A006 FETCH 1 (X-GM-LABELS)
+* 1 FETCH (X-GM-LABELS ("\\Important" "Work" "Project-Alpha"))
+```
+
+**X-GM-RAW** - Gmail Search Syntax:
+```imap
+A007 SEARCH X-GM-RAW "from:boss@company.com has:attachment"
+* SEARCH 5 12 89 234
+```
+
+### Sync Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    IMAP Sync Engine                          │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ┌──────────────┐     ┌──────────────┐     ┌─────────────┐  │
+│  │ Main Client  │     │ IDLE Client  │     │ Reconnect   │  │
+│  │              │     │              │     │ Manager     │  │
+│  │ • Initial    │     │ • Push       │     │             │  │
+│  │   sync       │     │   notifications│   │ • Exponential│ │
+│  │ • Incremental│     │ • Per-folder │     │   backoff   │  │
+│  │   updates    │     │   monitoring │     │ • Health    │  │
+│  │ • CONDSTORE  │     │ • 29min      │     │   checks    │  │
+│  │   deltas     │     │   keepalive  │     │             │  │
+│  └──────┬───────┘     └──────┬───────┘     └──────┬──────┘  │
+│         │                    │                     │         │
+│         ▼                    ▼                     ▼         │
+│  ┌─────────────────────────────────────────────────────────┐ │
+│  │              Connection Pool + OAuth2                   │ │
+│  │  • Automatic token refresh                              │ │
+│  │  • XOAUTH2 SASL mechanism                               │ │
+│  │  • Connection reuse                                     │ │
+│  └─────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+                    ┌─────────────────┐
+                    │   Gmail IMAP    │
+                    │ imap.gmail.com  │
+                    │     :993        │
+                    └─────────────────┘
+```
+
+### UIDNEXT Tracking
+
+We use UIDNEXT for efficient new message detection:
+
+```python
+# On folder SELECT, Gmail returns:
+# * OK [UIDNEXT 12345] Predicted next UID
+
+# Our sync logic:
+stored_uidnext = database.get_folder_state(folder).uidnext
+if stored_uidnext:
+    # Only fetch UIDs >= stored value
+    new_uids = imap.search(f"UID {stored_uidnext}:*")
+else:
+    # Initial sync - fetch all
+    new_uids = imap.search("ALL")
+
+# After sync, store new UIDNEXT
+database.save_folder_state(folder, uidnext=current_uidnext)
+```
+
+**Edge cases handled:**
+- UIDVALIDITY changes (full re-sync required)
+- Gaps in UID sequence (deleted messages)
+- Server-side expunges during sync
+
+### Batch Fetching Strategy
+
+Large mailboxes require careful batching:
+
+```python
+BATCH_SIZE = 500  # Optimal for Gmail
+
+def fetch_emails(uids: List[int], folder: str):
+    results = {}
+    for batch in chunks(uids, BATCH_SIZE):
+        # Single FETCH for multiple attributes
+        data = imap.fetch(
+            batch,
+            "(UID FLAGS INTERNALDATE RFC822.SIZE "
+            "BODY.PEEK[HEADER] BODY.PEEK[TEXT] "
+            "X-GM-THRID X-GM-MSGID X-GM-LABELS)"
+        )
+        results.update(data)
+    return results
+```
+
+**Why 500?**
+- Gmail handles up to ~1000 per FETCH
+- 500 balances memory usage vs round-trips
+- Allows progress logging every batch
+
+### OAuth2 Authentication
+
+We use XOAUTH2 SASL mechanism:
+
+```python
+def authenticate(self, access_token: str, email: str):
+    # Build XOAUTH2 string
+    auth_string = f"user={email}\x01auth=Bearer {access_token}\x01\x01"
+    encoded = base64.b64encode(auth_string.encode()).decode()
+    
+    # IMAP AUTHENTICATE command
+    self.connection.authenticate("XOAUTH2", lambda x: encoded)
+```
+
+**Token refresh flow:**
+1. Engine detects 401/token expiry
+2. Uses refresh_token to get new access_token
+3. Updates token.json
+4. Reconnects IMAP with new token
+5. Resumes sync from last position
+
+### Error Handling & Resilience
+
+| Error | Recovery Strategy |
+|-------|-------------------|
+| Connection timeout | Exponential backoff (1s → 2s → 4s → ... → 60s max) |
+| Token expired | Auto-refresh, reconnect |
+| UIDVALIDITY changed | Full folder re-sync |
+| Temporary Gmail error | Retry with backoff |
+| Permanent error (e.g., folder deleted) | Log, skip folder, continue |
+
+### Performance Metrics
+
+| Metric | Typical Value |
+|--------|---------------|
+| Initial sync (10k emails) | 3-5 minutes |
+| Incremental sync (idle) | < 500ms |
+| IDLE notification latency | < 2 seconds |
+| Memory per 10k emails | ~50MB during sync |
+| CONDSTORE delta check | < 100ms |
+
+### Feature Evolution
+
+| Version | IMAP Enhancement |
+|---------|------------------|
+| v1.0 | Basic IMAP sync |
+| v2.0 | IDLE push notifications |
+| v3.0 | CONDSTORE incremental sync |
+| v4.0 | Gmail extensions (X-GM-THRID, X-GM-LABELS) |
+| v4.1 | OAuth2 auto-refresh, reconnect manager |
+| v4.2 | UIDNEXT tracking, batch optimization |

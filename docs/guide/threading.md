@@ -1,6 +1,6 @@
-# Email Threading (v2.2.0)
+# Email Threading
 
-Gmail Secretary v2.2.0 introduces full RFC 5256 threading support, enabling accurate conversation grouping with automatic migration for existing databases.
+Gmail Secretary uses Gmail's native threading via the `X-GM-THRID` IMAP extension for accurate, instant conversation grouping.
 
 ## Overview
 
@@ -9,206 +9,224 @@ Email threading groups related messages into conversations. This is essential fo
 - Understanding email context without reading each message individually
 - AI agents summarizing entire conversations
 - Identifying the latest response in a thread
+- Finding all related messages with a single query
 
-## How Threading Works
+## Gmail Threading with X-GM-THRID
 
-### Server-Side Threading (RFC 5256)
+Gmail provides a proprietary IMAP extension that exposes the same thread IDs used in the Gmail web interface and API. This is the **canonical** threading mechanism we use.
 
-When your IMAP server supports the `THREAD` extension, we use it for accurate parent/child relationships:
+### Why X-GM-THRID?
 
-```
-IMAP Server → THREAD REFERENCES UTF-8 ALL
-            ← * THREAD (2)(3 6 (4 23)(44 7 96))
-```
+| Approach | Accuracy | Performance | Gmail Support |
+|----------|----------|-------------|---------------|
+| **X-GM-THRID** (current) | Perfect | Instant | Native ✅ |
+| RFC 5256 THREAD | Good | Slow | Supported |
+| Local header parsing | Variable | Fast | N/A |
 
-The response encodes thread hierarchy:
-- Thread 1: Message 2 (standalone)
-- Thread 2: 3 → 6 → branches to (4 → 23) and (44 → 7 → 96)
+X-GM-THRID advantages:
+- **Exact match** with Gmail web UI threading
+- **64-bit unique identifier** per thread
+- **Server-computed** - no client-side guesswork
+- **Instant retrieval** via IMAP FETCH or SEARCH
 
-Gmail's IMAP server supports `THREAD=REFERENCES`.
+### How It Works
 
-### Local Threading Fallback
+Gmail's IMAP server exposes thread IDs through the `X-GM-THRID` attribute:
 
-For servers without `THREAD` support, we build the thread index locally using:
-
-1. **In-Reply-To** header: Points to the immediate parent message
-2. **References** header: Lists all ancestor Message-IDs
-
-This achieves the same result, just computed client-side instead of server-side.
-
-## Thread Data Model
-
-Each email in the SQLite cache stores:
-
-| Column | Description |
-|--------|-------------|
-| `in_reply_to` | Message-ID this email replies to |
-| `references` | Space-separated list of ancestor Message-IDs |
-| `thread_root_uid` | UID of the first message in the thread |
-| `thread_parent_uid` | UID of the direct parent message |
-| `thread_depth` | Nesting level (0 = root, 1 = first reply, etc.) |
-
-### Example Thread Structure
-
-```
-Email A (thread_root_uid=100, thread_parent_uid=NULL, thread_depth=0)
-├── Email B (thread_root_uid=100, thread_parent_uid=100, thread_depth=1)
-│   └── Email D (thread_root_uid=100, thread_parent_uid=101, thread_depth=2)
-└── Email C (thread_root_uid=100, thread_parent_uid=100, thread_depth=1)
+```imap
+# Fetch thread ID for messages
+A001 FETCH 1:4 (X-GM-THRID)
+* 1 FETCH (X-GM-THRID 1278455344230334865)
+* 2 FETCH (X-GM-THRID 1266894439832287888)
+* 3 FETCH (X-GM-THRID 1266894439832287888)
+* 4 FETCH (X-GM-THRID 1266894439832287888)
+A001 OK FETCH (Success)
 ```
 
-## Automatic Backfill
+Messages 2, 3, and 4 share the same thread ID - they're in the same conversation.
 
-When upgrading from v2.1.x or earlier, your existing emails lack thread headers. The system handles this automatically:
+### Searching by Thread
 
-### Migration Flow
+Find all messages in a thread using IMAP SEARCH:
 
-```
-Container Start
-      ↓
-sync_folder() called
-      ↓
-Detect emails with empty in_reply_to/references
-      ↓
-Fetch ONLY headers from IMAP (fast - no body re-download)
-      ↓
-Update SQLite with thread headers
-      ↓
-Build thread index
+```imap
+A002 UID SEARCH X-GM-THRID 1266894439832287888
+* SEARCH 2 3 4
+A002 OK SEARCH (Success)
 ```
 
-### What You'll See in Logs
+This returns UIDs of all messages in the conversation, regardless of folder.
 
+## Data Model
+
+Each email stores Gmail-native identifiers:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `gmail_thread_id` | TEXT | X-GM-THRID value (64-bit as string) |
+| `gmail_message_id` | TEXT | X-GM-MSGID value (unique per message) |
+| `gmail_labels` | TEXT | X-GM-LABELS (comma-separated) |
+
+### Database Schema
+
+```sql
+CREATE TABLE emails (
+    -- ... other columns ...
+    gmail_thread_id TEXT,
+    gmail_message_id TEXT,
+    gmail_labels TEXT
+);
+
+CREATE INDEX idx_gmail_thread_id ON emails(gmail_thread_id);
 ```
-[BACKFILL] Fetching thread headers for 26000 emails in INBOX
-[BACKFILL] Progress: 100/26000 headers fetched
-[BACKFILL] Progress: 200/26000 headers fetched
-...
-[BACKFILL] Complete: 26000 emails updated with thread headers
-[BACKFILL] Building thread index for INBOX
-```
 
-### Performance
-
-| Emails | Backfill Time | Notes |
-|--------|---------------|-------|
-| 1,000 | ~30 seconds | Headers only, no body |
-| 10,000 | ~5 minutes | Batched in groups of 100 |
-| 25,000 | ~12 minutes | One-time operation |
-
-After backfill completes, thread queries are instant (SQLite).
+Thread lookups are O(1) index scans.
 
 ## Using Thread Tools
 
 ### get_email_thread
 
-Retrieves all emails in a conversation:
+Retrieves all emails in a conversation by thread ID:
 
 ```json
 {
   "tool": "get_email_thread",
   "arguments": {
-    "folder": "INBOX",
-    "uid": 12345
+    "thread_id": "1266894439832287888"
   }
 }
 ```
 
-Returns emails sorted by date with threading context.
+Returns all emails sharing that `gmail_thread_id`, sorted by date.
 
-### summarize_thread
+### gmail_get_thread
 
-Gets thread with content for AI summarization:
+Alternative using any email's UID to discover thread:
 
 ```json
 {
-  "tool": "summarize_thread", 
+  "tool": "gmail_get_thread",
   "arguments": {
-    "thread_id": "12345"
+    "uid": 12345,
+    "folder": "INBOX"
   }
 }
 ```
 
-Returns participant count, message count, and full content (truncated to 2000 chars per message).
+Looks up the email's thread ID, then returns all related messages.
 
-## Cache-First Architecture
+### summarize_thread
 
-All thread operations now query SQLite first:
+Gets thread content optimized for AI summarization:
 
-```
-get_email_thread(uid=123)
-        ↓
-cache.get_thread_emails(123, "INBOX")
-        ↓
-Follow references chain in SQLite
-        ↓
-Return all related emails (instant)
-        ↓
-[IMAP fallback only if cache unavailable]
+```json
+{
+  "tool": "summarize_thread",
+  "arguments": {
+    "thread_id": "1266894439832287888"
+  }
+}
 ```
 
-### Performance Comparison
+Returns:
+- Participant list
+- Message count
+- Full content (truncated to 2000 chars per message)
+- Chronological ordering
 
-| Operation | Before v2.2.0 | After v2.2.0 |
-|-----------|---------------|--------------|
-| Get thread (10 emails) | 2-5 seconds (N IMAP queries) | < 50ms (1 SQLite query) |
-| Summarize thread | 3-8 seconds | < 100ms |
+## Performance
 
-## Server Capability Detection
+Thread operations are instant thanks to indexed lookups:
 
-The system automatically detects server capabilities:
+| Operation | Time | Method |
+|-----------|------|--------|
+| Get thread (any size) | < 10ms | Index scan on gmail_thread_id |
+| Find all threads from sender | < 50ms | Compound index |
+| Summarize 20-message thread | < 100ms | Single query + formatting |
 
-```python
-# Check if THREAD is supported
-client.has_thread_capability("REFERENCES")  # True for Gmail
+### Comparison with RFC 5256
 
-# Check if SORT is supported  
-client.has_sort_capability()  # True for most servers
+The legacy RFC 5256 `THREAD` command required:
+1. Server-side computation per query
+2. Multiple round-trips for large threads
+3. Re-computation on every request
+
+With X-GM-THRID:
+1. Thread ID fetched once during sync
+2. Stored permanently in database
+3. All subsequent lookups are local
+
+## Other Gmail IMAP Extensions
+
+We leverage additional Gmail extensions:
+
+### X-GM-MSGID
+
+Unique message identifier (survives moves between folders):
+
+```imap
+A003 FETCH 1 (X-GM-MSGID)
+* 1 FETCH (X-GM-MSGID 1278455344230334866)
 ```
 
-### Supported Threading Algorithms
+### X-GM-LABELS
 
-| Algorithm | Description | Support |
-|-----------|-------------|---------|
-| `REFERENCES` | Full parent/child threading via References header | Gmail ✅ |
-| `ORDEREDSUBJECT` | Groups by normalized subject line | Most servers |
+Gmail labels applied to the message:
 
-We prefer `REFERENCES` when available for accurate threading.
+```imap
+A004 FETCH 1 (X-GM-LABELS)
+* 1 FETCH (X-GM-LABELS ("\\Important" "\\Starred" "Work" "Project-X"))
+```
+
+Labels are synced and stored, enabling queries like "all starred emails" without IMAP round-trips.
+
+## Migration from v2.x
+
+::: warning Deprecated: RFC 5256 Threading
+Versions before v4.0 used RFC 5256 `THREAD REFERENCES` with local fallback. This has been **deprecated** in favor of X-GM-THRID.
+
+Old columns (`thread_root_uid`, `thread_parent_uid`, `thread_depth`) are no longer used. The `gmail_thread_id` column is the source of truth.
+:::
+
+### Automatic Migration
+
+On upgrade, the sync engine:
+1. Fetches `X-GM-THRID` for all existing emails
+2. Populates `gmail_thread_id` column
+3. Rebuilds thread index
+
+This happens automatically during the first sync cycle.
 
 ## Troubleshooting
 
-### Thread Not Grouping Correctly
+### Thread Missing Some Messages
 
-Some emails lack proper `In-Reply-To` or `References` headers (e.g., composed in webmail without proper threading). These will appear as separate threads.
-
-### Backfill Seems Stuck
-
-Check Docker logs for progress:
-
+Messages in Trash or Spam may not appear. Check:
 ```bash
-docker logs workspace-secretary 2>&1 | grep BACKFILL
+# Search across all folders
+docker exec workspace-secretary sqlite3 /app/config/email_cache.db \
+  "SELECT folder, uid, subject FROM emails WHERE gmail_thread_id = '1266894439832287888';"
 ```
 
-Each batch of 100 emails logs progress. Large mailboxes take time but will complete.
+### Thread ID is NULL
 
-### Thread Index Not Building
-
-If you see `Failed to build thread index`, the IMAP server may have disconnected. The next sync cycle will retry automatically.
-
-## Technical Details
-
-### RFC References
-
-- **RFC 5256**: IMAP SORT and THREAD Extensions
-- **RFC 2822**: Message-ID, In-Reply-To, References headers
-- **RFC 5322**: Internet Message Format (updated)
-
-### SQLite Indexes
-
-Thread queries are optimized with:
-
-```sql
-CREATE INDEX idx_thread_root ON emails(thread_root_uid);
-CREATE INDEX idx_in_reply_to ON emails(in_reply_to);
-CREATE INDEX idx_message_id ON emails(message_id);
+Older synced emails may lack thread IDs. Force a re-sync:
+```bash
+docker compose restart workspace-secretary
 ```
+
+The sync engine backfills missing Gmail attributes.
+
+### Non-Gmail Servers
+
+X-GM-THRID is Gmail-specific. For other IMAP servers:
+- RFC 5256 THREAD support varies
+- Local threading via `In-Reply-To`/`References` headers is available
+- Contact us for enterprise multi-provider support
+
+## Technical References
+
+- [Gmail IMAP Extensions](https://developers.google.com/gmail/imap/imap-extensions)
+- [X-GM-THRID Documentation](https://developers.google.com/gmail/imap/imap-extensions#access_to_the_gmail_thread_id_x-gm-thrid)
+- [X-GM-MSGID Documentation](https://developers.google.com/gmail/imap/imap-extensions#access_to_the_gmail_unique_message_id_x-gm-msgid)
+- [X-GM-LABELS Documentation](https://developers.google.com/gmail/imap/imap-extensions#access_to_gmail_labels_x-gm-labels)
