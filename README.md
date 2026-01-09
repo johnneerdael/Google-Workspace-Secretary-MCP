@@ -1,6 +1,6 @@
 # Google Workspace Secretary MCP
 
-[![Version](https://img.shields.io/badge/version-2.1.0-blue.svg)](https://github.com/johnneerdael/Google-Workspace-Secretary-MCP/releases)
+[![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)](https://github.com/johnneerdael/Google-Workspace-Secretary-MCP/releases)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An AI-native Model Context Protocol (MCP) server that transforms your Gmail and Google Calendar into an intelligent, programmable assistant for Claude and other AI systems.
@@ -9,16 +9,24 @@ An AI-native Model Context Protocol (MCP) server that transforms your Gmail and 
 
 ---
 
-## What's New in v2.0.0
+## What's New in v3.0.0
 
-**Local-First Architecture** — The server now operates like a proper email client (Thunderbird, Apple Mail) with a local SQLite cache:
+**Dual-Process Architecture** — Complete separation of concerns for reliability and flexibility:
 
-- ⚡ **Instant Reads**: Email queries hit local SQLite instead of IMAP — sub-millisecond response times
-- 🔄 **Background Sync**: Continuous incremental sync keeps your cache fresh (every 5 minutes)
-- 💾 **Persistent Cache**: Survives restarts; only fetches new emails after initial sync
-- 📊 **RFC-Compliant**: Proper UIDVALIDITY/UIDNEXT tracking per RFC 3501/4549
+- 🔄 **Engine + MCP Split**: Independent sync daemon (`secretary-engine`) + MCP server (`secretary-mcp`)
+- 📅 **Calendar Sync**: Full calendar synchronization with local SQLite cache
+- 🔌 **Unix Socket IPC**: Engine exposes internal API for mutations via Unix socket
+- 🧠 **Optional Semantic Search**: PostgreSQL + pgvector backend with embeddings (when OpenAI-compatible endpoint configured)
+- ⚡ **Configurable Database**: SQLite (default) or PostgreSQL with pgvector for AI features
 
-See the [Architecture Documentation](https://johnneerdael.github.io/Google-Workspace-Secretary-MCP/architecture.html) for technical details.
+### Database Options
+
+| Backend | When to Use | Features |
+|---------|-------------|----------|
+| **SQLite** (default) | Simple deployment, single user | FTS5 keyword search, WAL mode |
+| **PostgreSQL + pgvector** | AI features needed | Semantic search, embeddings, similarity matching |
+
+See the [Architecture Documentation](https://johnneerdael.github.io/Google-Workspace-Secretary-MCP/architecture.html) for details.
 
 ---
 
@@ -156,14 +164,20 @@ Once connected, ask your AI assistant:
 Google-Workspace-Secretary-MCP/
 ├── config/
 │   ├── config.yaml          # Your configuration (git-ignored)
-│   └── email_cache.db       # SQLite cache (auto-created)
+│   ├── email_cache.db       # SQLite email cache (auto-created)
+│   └── calendar_cache.db    # SQLite calendar cache (auto-created)
 ├── workspace_secretary/
-│   ├── server.py            # MCP server + background sync
+│   ├── server.py            # MCP server
 │   ├── tools.py             # All MCP tools
-│   ├── cache.py             # SQLite cache layer
-│   └── ...
+│   ├── engine/              # Sync engine (v3.0.0)
+│   │   ├── api.py           # Internal API (Unix socket)
+│   │   ├── imap_sync.py     # IMAP client and sync
+│   │   ├── calendar_sync.py # Calendar client and sync
+│   │   ├── email_cache.py   # Email SQLite cache
+│   │   └── calendar_cache.py# Calendar SQLite cache
+│   └── engine_client.py     # MCP → Engine communication
 ├── docs/                    # VitePress documentation
-├── docker-compose.yml
+├── docker-compose.yaml      # Dual-process deployment
 └── config.sample.yaml       # Template config
 ```
 

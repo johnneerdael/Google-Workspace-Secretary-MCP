@@ -35,6 +35,7 @@ export default defineConfig({
             { text: 'Security', link: '/guide/security' },
             { text: 'OAuth Workaround', link: '/guide/oauth_workaround' },
             { text: 'Docker Deployment', link: '/guide/docker' },
+            { text: 'Semantic Search', link: '/guide/semantic-search' },
             { text: 'Threading', link: '/guide/threading' },
             { text: 'Agent Patterns', link: '/guide/agents' },
             { text: 'Use Cases', link: '/guide/use-cases' },

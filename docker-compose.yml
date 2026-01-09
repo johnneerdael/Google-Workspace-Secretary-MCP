@@ -7,14 +7,11 @@ services:
       - "8080:8080"
       - "8000:8000"
     volumes:
-      # Mount config file directly to /app where server expects it
       - ./config.yaml:/app/config.yaml:ro
-      # Mount config directory for tokens/credentials
+      - ./token.json:/app/token.json
       - ./config:/app/config
-      # Persist tasks if needed (optional if using external storage)
-      - ./tasks.json:/app/tasks.json
     environment:
-      - LOG_LEVEL=DEBUG
+      - LOG_LEVEL=INFO
     command: ["--config", "/app/config.yaml", "--transport", "http", "--host", "0.0.0.0", "--port", "8000"]
     stdin_open: true
     tty: true

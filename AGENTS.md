@@ -394,6 +394,84 @@ User approves once
 
 ---
 
+## 🔍 Semantic Search Capabilities (Optional)
+
+When PostgreSQL + pgvector is configured with embeddings enabled, additional AI-powered search capabilities become available.
+
+### Additional Tools (Conditional)
+
+These tools are ONLY available when `database.backend: postgres` AND `database.embeddings.enabled: true`:
+
+| Tool | Classification | Description |
+|------|----------------|-------------|
+| `semantic_search_emails` | Read-Only ✅ | Search emails by meaning, not keywords |
+| `find_related_emails` | Read-Only ✅ | Find emails similar to a reference email |
+| `get_embedding_status` | Read-Only ✅ | Check embeddings system health |
+
+### Intelligent Search Routing
+
+Agents SHOULD route search queries intelligently based on query type:
+
+```
+IF query has specific criteria (from:, to:, subject:, date range, exact phrase):
+    → Use search_emails() or gmail_search() (keyword search)
+    
+ELSE IF query is conceptual ("emails about budget concerns", "discussions about timeline"):
+    → Use semantic_search_emails() (meaning-based search)
+    
+ELSE IF semantic search unavailable:
+    → Fall back to search_emails() with best-effort keywords
+```
+
+### Context Gathering Pattern
+
+When drafting replies, agents SHOULD use `find_related_emails` to gather context:
+
+```
+1. User asks to reply to email UID 12345
+2. Agent calls get_email_details(uid=12345) to read the email
+3. Agent calls find_related_emails(uid=12345) to find similar discussions
+4. Agent reviews related emails for:
+   - Previous commitments made
+   - Decisions already taken
+   - Relevant context and history
+5. Agent drafts reply with full context awareness
+6. Agent presents draft to user (standard HITL flow)
+```
+
+### Morning Briefing Enhancement
+
+When semantic search is available, the morning briefing can be enhanced:
+
+```
+Standard briefing returns high-priority emails
+↓
+For each high-priority email, optionally call find_related_emails()
+↓
+Present context: "Sarah's question relates to 3 previous emails about Q4 planning"
+```
+
+### Graceful Degradation
+
+If semantic search is NOT configured:
+- `semantic_search_emails` → Returns error suggesting `search_emails`
+- `find_related_emails` → Returns error explaining embedding not found
+- `get_embedding_status` → Always works, shows diagnostic info
+
+Agents MUST handle these errors gracefully and fall back to keyword search.
+
+### Signals from Semantic Search
+
+Semantic search results include a `similarity` score (0.0 to 1.0):
+- **> 0.85**: Very high relevance, strong semantic match
+- **0.70 - 0.85**: Good relevance, related topic
+- **0.50 - 0.70**: Moderate relevance, may be tangentially related
+- **< 0.50**: Low relevance (filtered out by default threshold)
+
+Agents MAY use similarity scores to prioritize results or determine confidence.
+
+---
+
 ## 🎓 Agent Training Guidelines
 
 When creating agent prompts, always include:
@@ -404,5 +482,5 @@ When creating agent prompts, always include:
 
 ---
 
-**Last Updated**: 2026-01-08  
+**Last Updated**: 2026-01-09  
 **Enforcement**: All agents (primary + subagents) MUST comply with these rules. Violations will result in agent behavior review and correction.

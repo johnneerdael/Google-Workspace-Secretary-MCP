@@ -1,426 +1,324 @@
-# Architecture: Local-First Email Client with MCP Interface
+# Architecture v3.0.0
+
+This document describes the dual-process architecture introduced in v3.0.0.
 
 ## Overview
 
-Version 2.0.0 introduces a fundamental architectural change: the Google Workspace Secretary is now a **local-first IMAP email client** with an MCP (Model Context Protocol) interface.
+The Google Workspace Secretary MCP uses a **dual-process architecture** that separates concerns:
 
-This is the same architecture used by desktop email clients like Thunderbird and Apple Mail:
-
-1. **Initial Sync**: Download all email metadata and bodies to local storage
-2. **Local Queries**: All searches and filters run against the local database (instant)
-3. **Incremental Updates**: Only fetch new/changed emails from the server
-4. **Mutations**: Write operations go to IMAP, then immediately update local cache
-
-The difference: instead of a GUI, the interface is MCP—enabling AI agents to interact with your email.
+- **Engine** (`secretary-engine`): Headless sync daemon that owns data
+- **MCP** (`secretary-mcp`): AI interface layer that serves tools
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Container Startup                         │
-└─────────────────────┬───────────────────────────────────────┘
-                      ▼
+│  secretary-engine (standalone daemon)                       │
+│                                                             │
+│  ┌─────────────┐  ┌─────────────┐  ┌───────────────────┐   │
+│  │ IMAP Sync   │  │ Calendar    │  │ Internal API      │   │
+│  │ (OAuth2)    │  │ Sync        │  │ (Unix Socket)     │   │
+│  └──────┬──────┘  └──────┬──────┘  └─────────┬─────────┘   │
+│         │                │                   │              │
+│         ▼                ▼                   ▼              │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │              Database (SQLite or PostgreSQL)        │   │
+│  │  • email_cache (emails, threads, folders)           │   │
+│  │  • calendar_cache (events, calendars)               │   │
+│  │  • embeddings (optional, pgvector)                  │   │
+│  └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+                           │
+                           │ Unix Socket (mutations)
+                           │ Database (reads)
+                           ▼
 ┌─────────────────────────────────────────────────────────────┐
-│              ClientManager.initialize()                      │
-│         IMAP Connect + Background Sync Thread                │
-└─────────────────────┬───────────────────────────────────────┘
-                      ▼
-┌─────────────────────────────────────────────────────────────┐
-│     Full Sync (first run) or Incremental Sync (subsequent)   │
-│              SQLite ← IMAP Server                            │
-│         ** NEWEST EMAILS FIRST (descending UID) **           │
-└─────────────────────┬───────────────────────────────────────┘
-                      ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   MCP Tools Available                        │
-│    Reads → SQLite (instant)    Writes → IMAP + SQLite       │
+│  secretary-mcp (MCP server)                                 │
+│                                                             │
+│  ┌─────────────┐  ┌─────────────┐  ┌───────────────────┐   │
+│  │ MCP Tools   │  │ MCP         │  │ Bearer Auth       │   │
+│  │ (email,cal) │  │ Resources   │  │ (for clients)     │   │
+│  └─────────────┘  └─────────────┘  └───────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Sync Direction: Newest First
+## Component Responsibilities
 
-::: tip Immediate Usability
-The sync processes emails in **descending UID order** (newest first). This means your most recent emails are available within seconds of startup, even while older emails are still syncing in the background.
-:::
+| Aspect | Engine | MCP |
+|--------|--------|-----|
+| **Auth** | OAuth2 (Gmail/Calendar APIs) | Bearer token (for AI clients) |
+| **Lifecycle** | Always running, independent | Stateless, can restart anytime |
+| **Data ownership** | Owns database, syncs continuously | Reads from database |
+| **Mutations** | Handles all writes via internal API | Calls Engine API |
+| **Entry point** | `python -m workspace_secretary.engine` | `python -m workspace_secretary` |
 
-### Why Newest First?
+## Database Backends
 
-| Approach | Behavior | Usability |
-|----------|----------|-----------|
-| Oldest first | 2015 emails sync before today's | Must wait for full sync to see recent mail |
-| **Newest first** | Today's emails sync first | Can start using MCP almost immediately |
+### SQLite (Default)
 
-### Using MCP During Initial Sync
+Best for simple deployment and single-user scenarios.
 
-You can start using the MCP server **immediately** after startup. Be aware:
-
-| Query Type | During Sync | Notes |
-|------------|-------------|-------|
-| Recent emails (last week) | ✅ Available quickly | First ~500-1000 emails sync in minutes |
-| Search by sender | ⚠️ Partial results | Only synced emails are searchable |
-| Full text search | ⚠️ Partial results | Older emails may not appear yet |
-| Mark as read/move | ✅ Works immediately | Mutations work on any synced email |
-| Send email | ✅ Always works | Doesn't depend on cache |
-
-**No risk of data loss or corruption** — you simply may not see older emails until they're synced.
-
-## SQLite Cache Architecture
-
-### Database Location
-
-```
-config/email_cache.db
+```yaml
+database:
+  backend: sqlite
+  sqlite:
+    email_cache_path: config/email_cache.db
+    calendar_cache_path: config/calendar_cache.db
 ```
 
-This path maps to `/app/config/email_cache.db` inside the Docker container. The `./config:/app/config` volume mount ensures persistence across container restarts.
+**Features:**
+- WAL mode for concurrent reads
+- FTS5 for full-text search
+- Zero configuration
+- Single-file deployment
 
-### Schema
+### PostgreSQL + pgvector (AI Features)
 
-#### `emails` Table
+Required when you want semantic search and AI-powered features.
 
-Stores complete email data including full message bodies:
+```yaml
+database:
+  backend: postgres
+  postgres:
+    host: localhost
+    port: 5432
+    database: secretary
+    user: secretary
+    password: ${POSTGRES_PASSWORD}
+  
+embeddings:
+  enabled: true
+  endpoint: https://api.openai.com/v1/embeddings
+  model: text-embedding-3-small
+  api_key: ${OPENAI_API_KEY}
+  dimensions: 1536
+```
+
+**Features:**
+- pgvector for vector similarity search
+- Semantic email search ("find emails about project deadlines")
+- Related email detection
+- Context retrieval for AI drafting (RAG)
+- HNSW indexing for fast similarity queries
+
+## Internal API
+
+The Engine exposes a FastAPI server on Unix socket for mutations:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/status` | GET | Health check, sync status |
+| `/api/sync/trigger` | POST | Trigger immediate sync |
+| `/api/email/move` | POST | Move email to folder |
+| `/api/email/mark-read` | POST | Mark email as read |
+| `/api/email/mark-unread` | POST | Mark email as unread |
+| `/api/email/labels` | POST | Modify Gmail labels |
+| `/api/calendar/event` | POST | Create calendar event |
+| `/api/calendar/respond` | POST | Accept/decline meeting |
+
+## Database Schema
+
+### Email Cache
 
 ```sql
 CREATE TABLE emails (
-    uid INTEGER NOT NULL,           -- IMAP UID (unique within folder)
-    folder TEXT NOT NULL,           -- Folder name (e.g., "INBOX")
-    message_id TEXT,                -- RFC 2822 Message-ID header
-    subject TEXT,                   -- Email subject
-    from_addr TEXT,                 -- Sender (formatted: "Name <email>")
-    to_addr TEXT,                   -- Recipients (comma-separated)
-    cc_addr TEXT,                   -- CC recipients (comma-separated)
-    date TEXT,                      -- ISO 8601 timestamp
-    body_text TEXT,                 -- Plain text body (complete)
-    body_html TEXT,                 -- HTML body (complete)
-    flags TEXT,                     -- IMAP flags (comma-separated)
-    is_unread BOOLEAN,              -- Derived from \Seen flag
-    is_important BOOLEAN,           -- Derived from \Flagged flag
-    size INTEGER,                   -- Approximate message size
-    modseq INTEGER,                 -- CONDSTORE modification sequence
-    synced_at TEXT,                 -- Last sync timestamp
-    in_reply_to TEXT,               -- Message-ID of parent (v2.2.0)
-    references TEXT,                -- Space-separated ancestor Message-IDs (v2.2.0)
-    thread_root_uid INTEGER,        -- UID of thread root message (v2.2.0)
-    thread_parent_uid INTEGER,      -- UID of direct parent message (v2.2.0)
-    thread_depth INTEGER DEFAULT 0, -- Nesting level: 0=root (v2.2.0)
+    uid INTEGER,
+    folder TEXT,
+    message_id TEXT,
+    subject TEXT,
+    from_addr TEXT,
+    to_addr TEXT,
+    cc_addr TEXT,
+    date TEXT,
+    body_text TEXT,
+    body_html TEXT,
+    flags TEXT,
+    is_unread INTEGER,
+    is_important INTEGER,
+    modseq INTEGER,
+    in_reply_to TEXT,
+    references_header TEXT,
+    thread_root TEXT,
+    thread_parent_uid INTEGER,
+    thread_depth INTEGER,
     PRIMARY KEY (uid, folder)
 );
-```
 
-#### `folder_state` Table
-
-Tracks IMAP folder state for incremental synchronization:
-
-```sql
 CREATE TABLE folder_state (
-    folder TEXT PRIMARY KEY,        -- Folder name
-    uidvalidity INTEGER,            -- IMAP UIDVALIDITY value
-    uidnext INTEGER,                -- Next expected UID
-    highestmodseq INTEGER,          -- Highest MODSEQ seen
-    last_sync TEXT                  -- Last sync timestamp
+    folder TEXT PRIMARY KEY,
+    uidvalidity INTEGER,
+    uidnext INTEGER,
+    highestmodseq INTEGER,
+    last_sync TEXT
 );
 ```
 
-### Indexes
+### Calendar Cache
 
 ```sql
-CREATE INDEX idx_folder ON emails(folder);
-CREATE INDEX idx_unread ON emails(is_unread);
-CREATE INDEX idx_date ON emails(date);
-CREATE INDEX idx_from ON emails(from_addr);
-CREATE INDEX idx_message_id ON emails(message_id);
-CREATE INDEX idx_modseq ON emails(modseq);
-CREATE INDEX idx_thread_root ON emails(thread_root_uid);    -- v2.2.0
-CREATE INDEX idx_in_reply_to ON emails(in_reply_to);        -- v2.2.0
+CREATE TABLE calendars (
+    id TEXT PRIMARY KEY,
+    summary TEXT,
+    description TEXT,
+    timezone TEXT,
+    access_role TEXT,
+    sync_token TEXT,
+    last_sync TEXT
+);
+
+CREATE TABLE events (
+    id TEXT PRIMARY KEY,
+    calendar_id TEXT,
+    summary TEXT,
+    description TEXT,
+    location TEXT,
+    start_time TEXT,
+    end_time TEXT,
+    all_day INTEGER,
+    status TEXT,
+    organizer_email TEXT,
+    recurrence TEXT,
+    recurring_event_id TEXT,
+    html_link TEXT,
+    hangout_link TEXT,
+    created TEXT,
+    updated TEXT,
+    etag TEXT,
+    raw_json TEXT
+);
+
+CREATE TABLE attendees (
+    event_id TEXT,
+    email TEXT,
+    display_name TEXT,
+    response_status TEXT,
+    is_organizer INTEGER,
+    is_self INTEGER,
+    PRIMARY KEY (event_id, email)
+);
 ```
 
-## IMAP Sync Protocol
+### Embeddings (PostgreSQL only)
 
-The sync implementation follows best practices from IMAP RFCs:
+```sql
+CREATE TABLE email_embeddings (
+    email_uid INTEGER,
+    email_folder TEXT,
+    embedding vector(1536),
+    model TEXT,
+    content_hash TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (email_uid, email_folder)
+);
 
-- **RFC 3501**: IMAP4rev1 base protocol
-- **RFC 4549**: Synchronization Operations for Disconnected IMAP4 Clients
-- **RFC 5162**: IMAP4 Extensions for Quick Mailbox Resynchronization (QRESYNC)
-- **RFC 5256**: IMAP SORT and THREAD Extensions (v2.2.0)
+CREATE INDEX idx_email_embeddings_vector 
+ON email_embeddings USING hnsw (embedding vector_cosine_ops);
+```
 
-### UIDVALIDITY
+## Sync Strategy
 
-Every IMAP folder has a `UIDVALIDITY` value—a unique identifier that changes whenever UIDs are reassigned (e.g., after folder repair or server migration).
+### Email Sync
+1. **Initial**: Full sync of INBOX (newest first, batch of 50)
+2. **Incremental**: UIDNEXT-based delta sync every 5 minutes
+3. **Threading**: RFC 5256 THREAD/SORT when available, References-based fallback
 
-**Rule**: If `UIDVALIDITY` changes, the entire local cache for that folder is invalid and must be cleared.
+### Calendar Sync
+1. **Initial**: Full sync (all events, no time limit for historical data)
+2. **Incremental**: Sync token-based delta sync
+3. **Fallback**: Full resync on 410 (sync token expired)
+
+## Deployment Options
+
+### Single Process (Development)
+
+```bash
+# Runs both Engine and MCP in one process (legacy mode)
+docker-compose -f docker-compose.single.yaml up
+```
+
+### Dual Process (Production)
+
+```bash
+# Runs Engine and MCP as separate services
+docker-compose up
+```
+
+### Docker Compose (Dual Process)
+
+```yaml
+services:
+  engine:
+    build: .
+    command: ["uv", "run", "python", "-m", "workspace_secretary.engine"]
+    volumes:
+      - ./config:/app/config
+      - engine-socket:/tmp
+    environment:
+      - ENGINE_SOCKET=/tmp/secretary-engine.sock
+
+  mcp:
+    build: .
+    command: ["uv", "run", "python", "-m", "workspace_secretary"]
+    volumes:
+      - ./config:/app/config:ro
+      - engine-socket:/tmp:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      engine:
+        condition: service_healthy
+
+volumes:
+  engine-socket:
+```
+
+## AI Features (pgvector)
+
+When PostgreSQL + embeddings are configured, additional capabilities are unlocked:
+
+### Semantic Search
+
+Find emails by meaning, not just keywords:
 
 ```python
-if stored_state.get("uidvalidity") != current_uidvalidity:
-    logger.warning("UIDVALIDITY changed, cache invalidated - full sync required")
-    self.clear_folder(folder)
-    need_full_sync = True
+# "Find emails about project deadlines" matches:
+# - "We need to finish by end of quarter"
+# - "Timeline for the deliverable"
+# - "When is this due?"
 ```
 
-### UIDNEXT
+### Related Emails
 
-`UIDNEXT` is the next UID the server will assign. By storing this value, we know exactly which emails are new:
+Find contextually similar emails:
 
 ```python
-# Only fetch emails with UID > last known UIDNEXT
-new_uids = client.search({"UID": f"{last_uid + 1}:*"}, folder=folder)
+# Given an email about "Q4 budget planning"
+# Returns related emails about:
+# - Previous budget discussions
+# - Q3 budget review
+# - Financial planning meetings
 ```
 
-### Full Sync vs Incremental Sync
+### RAG Context
 
-| Trigger | Sync Type | What Happens |
-|---------|-----------|--------------|
-| No `folder_state` record | Full | Download all emails |
-| `UIDVALIDITY` changed | Full | Clear cache, download all emails |
-| `UIDVALIDITY` unchanged | Incremental | Only fetch UIDs > stored `uidnext` |
-
-### Batch Processing
-
-To avoid memory issues and provide progress feedback, emails are fetched in batches:
+Automatically retrieve relevant context for drafting replies:
 
 ```python
-batch_size = 50
-
-for batch_start in range(0, total, batch_size):
-    batch_uids = uid_list[batch_start : batch_start + batch_size]
-    emails = client.fetch_emails(batch_uids, folder=folder)
-    # Process and commit batch
-    conn.commit()
-    # Save folder state after each batch (crash recovery)
-    self._save_folder_state(folder, uidvalidity, highest_uid_in_batch + 1)
-```
-
-### Deletion Detection
-
-During incremental sync, we detect emails deleted on the server:
-
-```python
-def _sync_deletions(self, client, folder):
-    server_uids = set(client.search({"ALL": True}, folder=folder))
-    cached_uids = {row[0] for row in conn.execute("SELECT uid FROM emails WHERE folder = ?")}
-    
-    deleted_uids = cached_uids - server_uids
-    if deleted_uids:
-        conn.execute(f"DELETE FROM emails WHERE folder = ? AND uid IN ({placeholders})")
-```
-
-## Startup Behavior
-
-### Initialization Sequence
-
-1. **Container starts** → Python process begins
-2. **`ClientManager.initialize()`** → Loads config, connects to IMAP
-3. **Background sync thread** → Spawns immediately (daemon thread)
-4. **MCP server ready** → Accepts connections while sync runs
-
-```python
-class ClientManager:
-    def initialize(self, config_path):
-        self.imap_client.connect()
-        self._initialized = True
-        self._start_background_sync()  # Non-blocking
-```
-
-### Sync Timeline
-
-| Mailbox Size | Initial Sync Time | Incremental Sync |
-|--------------|-------------------|------------------|
-| 1,000 emails | ~1-2 minutes | Seconds |
-| 10,000 emails | ~10-15 minutes | Seconds |
-| 25,000 emails | ~25-30 minutes | Seconds |
-
-### Crash Recovery
-
-Folder state is saved after each batch. If the container restarts mid-sync:
-
-1. On startup, `folder_state` is read
-2. Sync resumes from `uidnext` (last successfully synced UID + 1)
-3. Already-cached emails are not re-downloaded
-
-### Periodic Sync (5 Minutes)
-
-After initial sync completes, incremental sync runs every 5 minutes to catch:
-- New emails received from external senders
-- Changes made by other email clients
-- Server-side deletions
-
-```python
-while True:
-    time.sleep(300)  # 5 minutes
-    self._run_sync()
-```
-
-::: info Why 5 Minutes?
-The 5-minute interval balances freshness with server load. For emails you **send** or **mutate** through MCP, the cache updates instantly. The periodic sync only matters for external changes (emails from other people, or changes made in Gmail web/mobile).
-:::
-
-## Cache Invalidation
-
-### Instant Updates on Mutations
-
-::: tip No 5-Minute Wait
-When you perform a mutation (mark as read, move, delete), the **cache is updated immediately** — you don't wait for the next 5-minute sync cycle.
-:::
-
-All mutation tools follow this pattern:
-
-```
-1. Execute IMAP operation (server-side)
-2. If successful, update SQLite cache immediately
-3. Return result to caller
-```
-
-This means:
-- Mark an email as read → It's instantly reflected in `get_unread_messages`
-- Move an email to a folder → It's instantly searchable in the new folder
-- Delete an email → It's instantly removed from all queries
-
-### Tools with Instant Cache Updates
-
-| Tool | IMAP Operation | Cache Update |
-|------|----------------|--------------|
-| `mark_as_read` | Add `\Seen` flag | `UPDATE emails SET is_unread = 0` |
-| `mark_as_unread` | Remove `\Seen` flag | `UPDATE emails SET is_unread = 1` |
-| `move_email` | COPY + DELETE | `UPDATE emails SET folder = ?` |
-| `process_email` | Various | Corresponding cache update |
-| `quick_clean_inbox` | Bulk MOVE | Bulk cache updates |
-
-### Example: mark_as_read
-
-```python
-async def mark_as_read(folder, uid, ctx):
-    client = get_client_from_context(ctx)
-    client.mark_email(uid, folder, r"\Seen", True)  # IMAP
-    
-    cache = get_email_cache_from_context(ctx)
-    if cache:
-        cache.mark_as_read(uid, folder)  # SQLite
-    
-    return "Email marked as read"
+# When drafting a reply, system fetches:
+# - Previous emails in thread
+# - Semantically related emails
+# - Relevant calendar events
 ```
 
 ## Performance Characteristics
 
-### Read Operations (SQLite)
+| Operation | SQLite | PostgreSQL |
+|-----------|--------|------------|
+| Email query (cached) | <1ms | <5ms |
+| Full-text search | 10-50ms | 5-20ms |
+| Semantic search | N/A | 20-100ms |
+| Initial sync (1000 emails) | 30-60s | 30-60s |
+| Incremental sync | <1s | <1s |
 
-| Operation | Time |
-|-----------|------|
-| `get_unread_messages` | < 10ms |
-| `search_emails` | < 50ms |
-| `quick_clean_inbox` filtering | < 100ms |
+## Migration Path
 
-### Write Operations (IMAP + SQLite)
-
-| Operation | Time |
-|-----------|------|
-| `mark_as_read` | 100-500ms |
-| `move_email` | 200-800ms |
-| `send_email` | 500ms-2s |
-
-### Sync Performance
-
-| Operation | Rate |
-|-----------|------|
-| Batch fetch | ~50 emails / 2-3 seconds |
-| Incremental sync (no changes) | < 1 second |
-| Deletion detection | ~1 second per 10,000 cached emails |
-
-## Docker Volume Requirements
-
-### Required Mount
-
-```yaml
-volumes:
-  - ./config:/app/config
-```
-
-This mount is **required** for:
-
-1. **Cache persistence**: `email_cache.db` survives container restarts
-2. **Credential storage**: OAuth tokens and config
-3. **Task storage**: `tasks.json` for task management
-
-### Without Volume Mount
-
-If the volume is not mounted:
-
-- Full sync runs on every container restart
-- OAuth tokens are lost (re-authentication required)
-- All cached emails are lost
-
-### Database Size
-
-Approximate storage requirements:
-
-| Emails | Database Size |
-|--------|---------------|
-| 1,000 | ~10-20 MB |
-| 10,000 | ~100-200 MB |
-| 25,000 | ~250-500 MB |
-
-Size varies based on email content (attachments are not cached, only body text/HTML).
-
-## Threading Architecture (v2.2.0)
-
-### RFC 5256 SORT and THREAD
-
-v2.2.0 adds support for server-side threading via the IMAP `THREAD` command:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     sync_folder()                            │
-└─────────────────────┬───────────────────────────────────────┘
-                      ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Fetch new emails (incremental)                  │
-└─────────────────────┬───────────────────────────────────────┘
-                      ▼
-┌─────────────────────────────────────────────────────────────┐
-│         Backfill thread headers (if missing)                 │
-│    Detects emails with empty in_reply_to/references          │
-│    Fetches ONLY headers from IMAP (fast)                     │
-└─────────────────────┬───────────────────────────────────────┘
-                      ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Build thread index                              │
-│   ┌─────────────────┴─────────────────┐                     │
-│   │                                   │                     │
-│ [THREAD=REFERENCES]          [No THREAD support]            │
-│   │                                   │                     │
-│ Server computes            Local algorithm via              │
-│ parent/child               References/In-Reply-To           │
-│   │                                   │                     │
-│   └─────────────────┬─────────────────┘                     │
-│                     ▼                                        │
-│   Store: thread_root_uid, thread_parent_uid, thread_depth   │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Thread Data Model
-
-Each email stores threading relationships:
-
-| Column | Description |
-|--------|-------------|
-| `in_reply_to` | Message-ID of the parent email |
-| `references` | Space-separated list of all ancestor Message-IDs |
-| `thread_root_uid` | UID of the first message in the thread |
-| `thread_parent_uid` | UID of the direct parent message |
-| `thread_depth` | Nesting level (0 = root, 1 = first reply, etc.) |
-
-### Automatic Backfill
-
-When upgrading from v2.1.x, existing emails lack thread headers. The system automatically:
-
-1. Detects emails with empty `in_reply_to`/`references` columns
-2. Fetches only the headers from IMAP (not full body - fast)
-3. Updates SQLite with thread data
-4. Builds the thread index
-
-This is a one-time migration that runs automatically on first sync after upgrade.
-
-### Thread Query Performance
-
-| Operation | Before v2.2.0 | After v2.2.0 |
-|-----------|---------------|--------------|
-| Get thread (10 msgs) | 2-5s (N IMAP queries) | < 50ms (SQLite) |
-| Summarize thread | 3-8s | < 100ms |
-
-See the [Threading Guide](/guide/threading) for complete documentation.
+1. **v2.x → v3.0**: Automatic. Existing SQLite cache is preserved.
+2. **SQLite → PostgreSQL**: Export/import tool provided (see `docs/guide/migration.md`)
