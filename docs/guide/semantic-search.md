@@ -361,4 +361,4 @@ Regular keyword search (`search_emails`) always works regardless of backend.
 
 - [Configuration Guide](./configuration) - All database options
 - [Agent Patterns](./agents) - Building intelligent workflows
-- [API Reference](/api/) - Complete tool documentation
+- [MCP Tools Reference](/tools/) - Complete tool documentation
