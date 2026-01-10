@@ -1794,6 +1794,54 @@ def run_engine():
     server.run()
 
 
+# =============================================================================
+# INTERNAL-ONLY ENDPOINTS (Web UI only, NOT exposed to MCP)
+# =============================================================================
+
+
+class EmailDeleteRequest(BaseModel):
+    uid: int
+    folder: str
+
+
+@app.post("/api/internal/email/delete")
+async def internal_delete_email(req: EmailDeleteRequest):
+    if not state.enrolled or not state.imap_client:
+        return {"status": "error", "message": "Not enrolled"}
+
+    try:
+        state.imap_client.move_email(req.uid, req.folder, "[Gmail]/Trash")
+        return {"status": "ok", "message": f"Email {req.uid} moved to Trash"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/internal/folders")
+async def internal_list_folders():
+    if not state.enrolled or not state.imap_client:
+        return {"status": "error", "folders": []}
+
+    try:
+        folders = state.imap_client.list_folders()
+        return {"status": "ok", "folders": folders}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "folders": []}
+
+
+@app.get("/api/internal/labels")
+async def internal_list_labels():
+    labels = SECRETARY_LABELS + [
+        "INBOX",
+        "STARRED",
+        "IMPORTANT",
+        "SENT",
+        "DRAFTS",
+        "SPAM",
+        "TRASH",
+    ]
+    return {"status": "ok", "labels": labels}
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     run_engine()

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" class="h-full">
+<html lang="en" class="h-full dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -23,34 +23,32 @@
     <style>
         [x-cloak] { display: none !important; }
         .email-content img { max-width: 100%; height: auto; }
-        .email-content a { color: #3b82f6; text-decoration: underline; }
+        .email-content a { color: #60a5fa; text-decoration: underline; }
     </style>
 </head>
-<body class="h-full bg-gray-50 dark:bg-gray-900" x-data="{ darkMode: localStorage.getItem('darkMode') === 'true' }" :class="{ 'dark': darkMode }">
+<body class="h-full bg-gray-950 text-gray-100" x-data="{ darkMode: localStorage.getItem('darkMode') !== 'false' }" x-init="if(!darkMode) document.documentElement.classList.remove('dark'); else document.documentElement.classList.add('dark')" :class="{ 'bg-gray-50 text-gray-900': !darkMode, 'bg-gray-950 text-gray-100': darkMode }">
     <div class="min-h-full">
-        <!-- Navigation -->
-        <nav class="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+        <nav class="bg-gray-900 border-b border-gray-800" :class="{ 'bg-white border-gray-200': !darkMode, 'bg-gray-900 border-gray-800': darkMode }">
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 <div class="flex justify-between h-16">
                     <div class="flex">
                         <div class="flex-shrink-0 flex items-center">
-                            <a href="/inbox" class="text-xl font-bold text-gray-900 dark:text-white">
+                            <a href="/inbox" class="text-xl font-bold">
                                 📧 Secretary
                             </a>
                         </div>
                         <div class="hidden sm:ml-6 sm:flex sm:space-x-8">
-                            <a href="/inbox" class="border-primary text-gray-900 dark:text-white inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                            <a href="/inbox" class="border-primary inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
                                 Inbox
                             </a>
-                            <a href="/search" class="border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium">
+                            <a href="/search" class="border-transparent text-gray-400 hover:text-gray-200 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium" :class="{ 'text-gray-500 hover:text-gray-700': !darkMode, 'text-gray-400 hover:text-gray-200': darkMode }">
                                 Search
                             </a>
                         </div>
                     </div>
                     <div class="flex items-center space-x-4">
-                        <!-- Dark mode toggle -->
-                        <button @click="darkMode = !darkMode; localStorage.setItem('darkMode', darkMode)" 
-                                class="p-2 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700">
+                        <button @click="darkMode = !darkMode; localStorage.setItem('darkMode', darkMode); if(darkMode) document.documentElement.classList.add('dark'); else document.documentElement.classList.remove('dark')" 
+                                class="p-2 rounded-md text-gray-400 hover:bg-gray-800" :class="{ 'hover:bg-gray-100': !darkMode, 'hover:bg-gray-800': darkMode }">
                             <span x-show="!darkMode">🌙</span>
                             <span x-show="darkMode" x-cloak>☀️</span>
                         </button>
@@ -59,13 +57,115 @@
             </div>
         </nav>
 
-        <!-- Main content -->
         <main class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
             {% block content %}{% endblock %}
         </main>
     </div>
 
-    <!-- HTMX loading indicator -->
     <div id="loading" class="htmx-indicator fixed top-0 left-0 right-0 h-1 bg-primary animate-pulse"></div>
+    
+    <div id="toast-container" class="fixed bottom-4 right-4 z-50 space-y-2"></div>
+    
+    <script>
+        // Global toast notification function
+        window.showToast = function(message, type = 'info', duration = 3000) {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            
+            const colors = {
+                success: 'bg-green-600',
+                error: 'bg-red-600',
+                info: 'bg-blue-600',
+                warning: 'bg-yellow-600'
+            };
+            
+            toast.className = `${colors[type] || colors.info} text-white px-4 py-3 rounded-lg shadow-lg transform transition-all duration-300 translate-x-full`;
+            toast.textContent = message;
+            container.appendChild(toast);
+            
+            // Animate in
+            requestAnimationFrame(() => {
+                toast.classList.remove('translate-x-full');
+            });
+            
+            // Auto-dismiss
+            setTimeout(() => {
+                toast.classList.add('translate-x-full', 'opacity-0');
+                setTimeout(() => toast.remove(), 300);
+            }, duration);
+        };
+        
+        // HTMX event handlers for showing toasts on action completion
+        document.body.addEventListener('htmx:afterRequest', function(event) {
+            const xhr = event.detail.xhr;
+            if (xhr && xhr.status >= 200 && xhr.status < 300) {
+                // Check if response has a message
+                try {
+                    const response = JSON.parse(xhr.responseText);
+                    if (response.message) {
+                        window.showToast(response.message, response.success ? 'success' : 'error');
+                    }
+                } catch (e) {
+                    // Not JSON, ignore
+                }
+            }
+        });
+        
+        document.body.addEventListener('htmx:responseError', function(event) {
+            window.showToast('Action failed. Please try again.', 'error');
+        });
+        
+        // Undo toast for delete operations
+        window.showUndoToast = function(message, uid, fromFolder, toFolder) {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            
+            toast.className = 'bg-gray-800 text-white px-4 py-3 rounded-lg shadow-lg transform transition-all duration-300 translate-x-full flex items-center justify-between space-x-4';
+            toast.innerHTML = `
+                <span>${message}</span>
+                <button class="text-blue-400 hover:text-blue-300 font-medium underline" onclick="window.undoDelete('${uid}', '${toFolder}', '${fromFolder}', this.closest('div'))">
+                    Undo
+                </button>
+            `;
+            container.appendChild(toast);
+            
+            // Animate in
+            requestAnimationFrame(() => {
+                toast.classList.remove('translate-x-full');
+            });
+            
+            // Auto-dismiss after 5 seconds (longer for undo)
+            const timeout = setTimeout(() => {
+                toast.classList.add('translate-x-full', 'opacity-0');
+                setTimeout(() => {
+                    toast.remove();
+                    window.location.href = '/inbox';
+                }, 300);
+            }, 5000);
+            
+            toast.dataset.timeout = timeout;
+        };
+        
+        // Undo delete by moving back to original folder
+        window.undoDelete = async function(uid, fromFolder, toFolder, toastEl) {
+            clearTimeout(parseInt(toastEl.dataset.timeout));
+            
+            try {
+                const response = await fetch(`/api/email/move/${encodeURIComponent(fromFolder)}/${uid}?destination=${encodeURIComponent(toFolder)}`, {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    window.showToast('Undo successful', 'success');
+                    toastEl.remove();
+                    // Stay on current page instead of redirecting
+                } else {
+                    window.showToast('Undo failed', 'error');
+                }
+            } catch (e) {
+                window.showToast('Undo failed', 'error');
+            }
+        };
+    </script>
 </body>
 </html>
