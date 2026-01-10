@@ -8,15 +8,12 @@ Provides a human interface to the email system with:
 - AI assistant integration (configurable LLM)
 """
 
-from fastapi import FastAPI, Request, Depends, Query, HTTPException
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pathlib import Path
-from typing import Optional
 import logging
-
-from workspace_secretary.web.database import get_db, DatabaseDep
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +35,13 @@ web_app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 @web_app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """Redirect to inbox."""
-    return templates.TemplateResponse(
-        "inbox.html",
-        {"request": request, "emails": [], "page": 1, "has_more": False},
-    )
+    return RedirectResponse(url="/inbox")
+
+
+@web_app.get("/favicon.ico")
+async def favicon():
+    """Return empty favicon to prevent 404."""
+    return Response(content=b"", media_type="image/x-icon")
 
 
 @web_app.get("/health")

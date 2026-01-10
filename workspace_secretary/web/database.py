@@ -2,11 +2,11 @@
 Database dependency for web routes.
 
 Provides access to the shared PostgreSQL database used by the engine.
+Reads configuration from the same config.yaml as the MCP server.
 """
 
-from typing import Annotated, Optional, Generator, Any
+from typing import Annotated, Optional, Any
 from fastapi import Depends
-import os
 import logging
 
 logger = logging.getLogger(__name__)
@@ -15,31 +15,20 @@ _db_instance: Optional[Any] = None
 
 
 def get_database():
-    """Get or create database instance from environment config."""
+    """Get or create database instance from config.yaml."""
     global _db_instance
 
     if _db_instance is not None:
         return _db_instance
 
-    from workspace_secretary.engine.database import PostgresDatabase, SqliteDatabase
+    from workspace_secretary.config import load_config
+    from workspace_secretary.engine.database import create_database
 
-    backend = os.environ.get("DB_BACKEND", "postgres")
-
-    if backend == "postgres":
-        _db_instance = PostgresDatabase(
-            host=os.environ.get("POSTGRES_HOST", "localhost"),
-            port=int(os.environ.get("POSTGRES_PORT", "5432")),
-            database=os.environ.get("POSTGRES_DB", "secretary"),
-            user=os.environ.get("POSTGRES_USER", "secretary"),
-            password=os.environ.get("POSTGRES_PASSWORD", ""),
-        )
-    else:
-        _db_instance = SqliteDatabase(
-            email_cache_path=os.environ.get("SQLITE_PATH", "config/email_cache.db"),
-        )
-
+    config = load_config()
+    _db_instance = create_database(config)
     _db_instance.initialize()
-    logger.info(f"Web UI database initialized: {backend}")
+
+    logger.info(f"Web UI database initialized: {config.database.backend.value}")
     return _db_instance
 
 
