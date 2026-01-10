@@ -124,6 +124,15 @@ The AI:
 3. Parses and presents the total
 :::
 
+## What's New in v4.2.5
+
+**Lockstep Sync+Embed Architecture** — Fixes critical race conditions:
+
+- 🔄 **Lockstep Processing**: Sync 50 emails → embed those 50 → repeat (no parallel race)
+- 📊 **Oldest-First Sync**: Now processes all emails from oldest to newest UID
+- ⚡ **Event Loop Fixes**: Pool init runs in executor, httpx client reused with semaphore
+- 🛡️ **Race Condition Fixed**: Embeddings can no longer exceed synced email count
+
 ## What's New in v4.2.4
 
 **Parallel Sync & Smart Scheduling**:

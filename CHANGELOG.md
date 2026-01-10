@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.2.5] - 2026-01-10
+
+### Changed
+
+- **Lockstep Sync+Embed Architecture**: Complete rewrite of sync/embedding coordination
+  - Sync and embed now run in lockstep: sync 50 emails → embed those 50 → repeat
+  - Eliminates race condition where embeddings could process more emails than synced
+  - IDLE monitor and embeddings loop only start after initial sync completes
+  - Fixes "2200/2000 embeddings processed" bug caused by concurrent DB writes
+
+### Fixed
+
+- **Event Loop Blocking in Pool Init**: `_init_connection_pool()` now runs in executor
+  - Added `asyncio.Lock` to prevent race condition on pool initialization
+- **Oldest-First Sync Order**: Now syncs emails from oldest to newest UID
+  - Previously synced newest-first then skipped all older emails
+  - Uses cursor-based pagination to process all emails (e.g., all 26000 instead of just 50)
+- **httpx Client Reuse**: `EmbeddingsClient` now reuses single `AsyncClient` instance
+  - Added `Semaphore(4)` to limit concurrent embedding requests
+  - Prevents connection exhaustion and reduces overhead
+
 ## [4.2.4] - 2026-01-10
 
 ### Added
