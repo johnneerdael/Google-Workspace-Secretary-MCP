@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Search - Secretary{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Search form -->
+    <form action="/search" method="get" class="space-y-4">
+        <div class="flex space-x-4">
+            <div class="flex-1">
+                <input type="text" 
+                       name="q" 
+                       value="{{ query }}"
+                       placeholder="Search emails..."
+                       class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-primary focus:border-transparent">
+            </div>
+            <button type="submit" 
+                    class="px-6 py-2 text-sm font-medium text-white bg-primary rounded-md hover:bg-primary/90">
+                Search
+            </button>
+        </div>
+        
+        <div class="flex items-center space-x-6">
+            <label class="flex items-center space-x-2">
+                <input type="radio" name="mode" value="keyword" {% if mode == 'keyword' %}checked{% endif %}
+                       class="text-primary focus:ring-primary">
+                <span class="text-sm text-gray-700 dark:text-gray-300">Keyword</span>
+            </label>
+            {% if supports_semantic %}
+            <label class="flex items-center space-x-2">
+                <input type="radio" name="mode" value="semantic" {% if mode == 'semantic' %}checked{% endif %}
+                       class="text-primary focus:ring-primary">
+                <span class="text-sm text-gray-700 dark:text-gray-300">Semantic (AI)</span>
+            </label>
+            {% endif %}
+        </div>
+        <input type="hidden" name="folder" value="{{ folder }}">
+    </form>
+
+    <!-- Results -->
+    {% if query %}
+    <div class="space-y-2">
+        <h2 class="text-lg font-medium text-gray-900 dark:text-white">
+            {{ results|length }} result{% if results|length != 1 %}s{% endif %} for "{{ query }}"
+        </h2>
+        
+        <div class="bg-white dark:bg-gray-800 shadow rounded-lg divide-y divide-gray-200 dark:divide-gray-700">
+            {% if results %}
+                {% for result in results %}
+                <a href="/thread/{{ result.folder }}/{{ result.uid }}" 
+                   class="block hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+                    <div class="px-4 py-4">
+                        <div class="flex items-center justify-between mb-1">
+                            <p class="text-sm font-medium text-gray-900 dark:text-white">
+                                {{ result.from_name }}
+                            </p>
+                            <div class="flex items-center space-x-2">
+                                {% if result.similarity %}
+                                <span class="text-xs px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200">
+                                    {{ "%.0f"|format(result.similarity * 100) }}% match
+                                </span>
+                                {% endif %}
+                                <span class="text-sm text-gray-500 dark:text-gray-400">{{ result.date }}</span>
+                            </div>
+                        </div>
+                        <p class="text-sm font-medium text-gray-800 dark:text-gray-200">{{ result.subject }}</p>
+                        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">{{ result.preview }}</p>
+                    </div>
+                </a>
+                {% endfor %}
+            {% else %}
+                <div class="px-4 py-12 text-center">
+                    <p class="text-gray-500 dark:text-gray-400">No results found</p>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+    {% else %}
+    <div class="text-center py-12">
+        <p class="text-gray-500 dark:text-gray-400">Enter a search query to find emails</p>
+        {% if supports_semantic %}
+        <p class="text-sm text-gray-400 dark:text-gray-500 mt-2">
+            Try semantic search to find emails by meaning, not just keywords
+        </p>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

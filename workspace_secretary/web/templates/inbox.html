@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Inbox - Secretary{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+    <!-- Header -->
+    <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Inbox</h1>
+        <div class="flex items-center space-x-2">
+            <label class="flex items-center space-x-2 text-sm text-gray-600 dark:text-gray-400">
+                <input type="checkbox" 
+                       {% if unread_only %}checked{% endif %}
+                       hx-get="/inbox?unread_only={{ 'false' if unread_only else 'true' }}&folder={{ folder }}"
+                       hx-target="body"
+                       hx-swap="outerHTML"
+                       class="rounded border-gray-300 dark:border-gray-600">
+                <span>Unread only</span>
+            </label>
+        </div>
+    </div>
+
+    <!-- Email list -->
+    <div class="bg-white dark:bg-gray-800 shadow rounded-lg divide-y divide-gray-200 dark:divide-gray-700">
+        {% if emails %}
+            {% for email in emails %}
+            <a href="/thread/{{ email.folder }}/{{ email.uid }}" 
+               class="block hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+                <div class="px-4 py-4 sm:px-6">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center min-w-0 flex-1">
+                            <!-- Unread indicator -->
+                            {% if email.is_unread %}
+                            <span class="w-2 h-2 bg-primary rounded-full mr-3 flex-shrink-0"></span>
+                            {% else %}
+                            <span class="w-2 h-2 mr-3 flex-shrink-0"></span>
+                            {% endif %}
+                            
+                            <!-- From -->
+                            <p class="text-sm font-medium text-gray-900 dark:text-white truncate w-48 flex-shrink-0 {% if email.is_unread %}font-semibold{% endif %}">
+                                {{ email.from_name or email.from_addr }}
+                            </p>
+                            
+                            <!-- Subject and preview -->
+                            <div class="ml-4 min-w-0 flex-1">
+                                <p class="text-sm text-gray-900 dark:text-white truncate {% if email.is_unread %}font-semibold{% endif %}">
+                                    {{ email.subject }}
+                                    {% if email.preview %}
+                                    <span class="text-gray-500 dark:text-gray-400 font-normal"> — {{ email.preview }}</span>
+                                    {% endif %}
+                                </p>
+                            </div>
+                        </div>
+                        
+                        <!-- Meta -->
+                        <div class="ml-4 flex items-center space-x-2 flex-shrink-0">
+                            {% if email.has_attachments %}
+                            <span class="text-gray-400" title="Has attachments">📎</span>
+                            {% endif %}
+                            <span class="text-sm text-gray-500 dark:text-gray-400">{{ email.date }}</span>
+                        </div>
+                    </div>
+                </div>
+            </a>
+            {% endfor %}
+        {% else %}
+            <div class="px-4 py-12 text-center">
+                <p class="text-gray-500 dark:text-gray-400">No emails found</p>
+            </div>
+        {% endif %}
+    </div>
+
+    <!-- Pagination -->
+    {% if has_more or page > 1 %}
+    <div class="flex justify-between items-center">
+        {% if page > 1 %}
+        <a href="/inbox?page={{ page - 1 }}&folder={{ folder }}&unread_only={{ unread_only }}"
+           class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700">
+            ← Previous
+        </a>
+        {% else %}
+        <div></div>
+        {% endif %}
+        
+        <span class="text-sm text-gray-500 dark:text-gray-400">Page {{ page }}</span>
+        
+        {% if has_more %}
+        <a href="/inbox?page={{ page + 1 }}&folder={{ folder }}&unread_only={{ unread_only }}"
+           class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700">
+            Next →
+        </a>
+        {% else %}
+        <div></div>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

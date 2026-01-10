@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}{{ subject }} - Secretary{% endblock %}
+
+{% block content %}
+<div class="space-y-4">
+    <!-- Back button and subject -->
+    <div class="flex items-start space-x-4">
+        <a href="/inbox" class="mt-1 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300">
+            ← Back
+        </a>
+        <h1 class="text-xl font-bold text-gray-900 dark:text-white flex-1">{{ subject }}</h1>
+    </div>
+
+    <!-- Messages -->
+    <div class="space-y-4">
+        {% for message in messages %}
+        <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden" 
+             x-data="{ expanded: {{ 'true' if loop.last else 'false' }} }">
+            <!-- Message header -->
+            <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700"
+                 @click="expanded = !expanded">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-3">
+                        <!-- Avatar -->
+                        <div class="w-10 h-10 rounded-full bg-primary flex items-center justify-center text-white font-medium">
+                            {{ message.from_name[0] if message.from_name else '?' }}
+                        </div>
+                        <div>
+                            <p class="text-sm font-medium text-gray-900 dark:text-white">
+                                {{ message.from_name or message.from_addr }}
+                            </p>
+                            <p class="text-xs text-gray-500 dark:text-gray-400">
+                                to {{ message.to_addr[:50] }}{% if message.to_addr|length > 50 %}...{% endif %}
+                                {% if message.cc_addr %}
+                                <span class="ml-1">cc: {{ message.cc_addr[:30] }}{% if message.cc_addr|length > 30 %}...{% endif %}</span>
+                                {% endif %}
+                            </p>
+                        </div>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        {% if message.has_attachments %}
+                        <span class="text-gray-400" title="Has attachments">📎</span>
+                        {% endif %}
+                        <span class="text-sm text-gray-500 dark:text-gray-400">{{ message.date }}</span>
+                        <span class="text-gray-400" x-text="expanded ? '▼' : '▶'"></span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Message content -->
+            <div x-show="expanded" x-collapse x-cloak>
+                <div class="px-4 py-4 email-content prose dark:prose-invert max-w-none text-sm">
+                    {{ message.content | safe }}
+                </div>
+                
+                {% if message.has_attachments and message.attachment_filenames %}
+                <div class="px-4 py-3 bg-gray-50 dark:bg-gray-700/50 border-t border-gray-200 dark:border-gray-700">
+                    <p class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Attachments</p>
+                    <div class="flex flex-wrap gap-2">
+                        {% for filename in message.attachment_filenames %}
+                        <span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-gray-100 dark:bg-gray-600 text-gray-700 dark:text-gray-300">
+                            📄 {{ filename }}
+                        </span>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- Quick actions -->
+    <div class="flex items-center space-x-3">
+        <button class="px-4 py-2 text-sm font-medium text-white bg-primary rounded-md hover:bg-primary/90">
+            Reply
+        </button>
+        <button class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700">
+            Forward
+        </button>
+    </div>
+</div>
+{% endblock %}

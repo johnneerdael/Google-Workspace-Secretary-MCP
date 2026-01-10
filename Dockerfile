@@ -24,6 +24,6 @@ RUN uv sync --frozen --no-dev --extra postgres
 
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-EXPOSE 8000
+EXPOSE 8000 8080
 
 CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

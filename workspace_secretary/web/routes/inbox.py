@@ -1,0 +1,156 @@
+"""
+Inbox routes - email list, pagination, filtering.
+"""
+
+from fastapi import APIRouter, Request, Query, HTTPException
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+from pathlib import Path
+from typing import Optional
+from datetime import datetime
+import html
+
+from workspace_secretary.web.database import get_db
+
+router = APIRouter()
+templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
+
+
+def format_date(date_val) -> str:
+    """Format date for display."""
+    if not date_val:
+        return ""
+
+    if isinstance(date_val, str):
+        try:
+            date_val = datetime.fromisoformat(date_val.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return date_val[:10] if len(date_val) > 10 else date_val
+
+    if isinstance(date_val, datetime):
+        now = datetime.now(date_val.tzinfo) if date_val.tzinfo else datetime.now()
+        if date_val.date() == now.date():
+            return date_val.strftime("%I:%M %p")
+        elif (now - date_val).days < 7:
+            return date_val.strftime("%a %I:%M %p")
+        else:
+            return date_val.strftime("%b %d")
+
+    return str(date_val)
+
+
+def truncate(text: str, length: int = 100) -> str:
+    """Truncate text with ellipsis."""
+    if not text:
+        return ""
+    text = html.escape(text.strip())
+    if len(text) <= length:
+        return text
+    return text[:length].rsplit(" ", 1)[0] + "..."
+
+
+def extract_name(addr: str) -> str:
+    """Extract display name from email address."""
+    if not addr:
+        return ""
+    if "<" in addr:
+        return addr.split("<")[0].strip().strip('"')
+    return addr.split("@")[0]
+
+
+@router.get("/inbox", response_class=HTMLResponse)
+async def inbox(
+    request: Request,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=10, le=100),
+    folder: str = Query("INBOX"),
+    unread_only: bool = Query(False),
+):
+    """Display inbox with pagination."""
+    db = get_db()
+    offset = (page - 1) * per_page
+
+    emails_raw = db.search_emails(
+        folder=folder,
+        is_unread=True if unread_only else None,
+        limit=per_page + 1,
+    )
+
+    has_more = len(emails_raw) > per_page
+    emails_raw = emails_raw[:per_page]
+
+    emails = []
+    for e in emails_raw:
+        emails.append(
+            {
+                "uid": e["uid"],
+                "folder": e["folder"],
+                "from_name": extract_name(e.get("from_addr", "")),
+                "from_addr": e.get("from_addr", ""),
+                "subject": e.get("subject", "(no subject)"),
+                "preview": truncate(e.get("body_text", ""), 120),
+                "date": format_date(e.get("date")),
+                "is_unread": e.get("is_unread", False),
+                "has_attachments": e.get("has_attachments", False),
+            }
+        )
+
+    return templates.TemplateResponse(
+        "inbox.html",
+        {
+            "request": request,
+            "emails": emails,
+            "page": page,
+            "per_page": per_page,
+            "has_more": has_more,
+            "folder": folder,
+            "unread_only": unread_only,
+        },
+    )
+
+
+@router.get("/api/emails", response_class=HTMLResponse)
+async def emails_partial(
+    request: Request,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=10, le=100),
+    folder: str = Query("INBOX"),
+    unread_only: bool = Query(False),
+):
+    """HTMX partial for email list."""
+    db = get_db()
+
+    emails_raw = db.search_emails(
+        folder=folder,
+        is_unread=True if unread_only else None,
+        limit=per_page + 1,
+    )
+
+    has_more = len(emails_raw) > per_page
+    emails_raw = emails_raw[:per_page]
+
+    emails = []
+    for e in emails_raw:
+        emails.append(
+            {
+                "uid": e["uid"],
+                "folder": e["folder"],
+                "from_name": extract_name(e.get("from_addr", "")),
+                "from_addr": e.get("from_addr", ""),
+                "subject": e.get("subject", "(no subject)"),
+                "preview": truncate(e.get("body_text", ""), 120),
+                "date": format_date(e.get("date")),
+                "is_unread": e.get("is_unread", False),
+                "has_attachments": e.get("has_attachments", False),
+            }
+        )
+
+    return templates.TemplateResponse(
+        "partials/email_list.html",
+        {
+            "request": request,
+            "emails": emails,
+            "page": page,
+            "has_more": has_more,
+        },
+    )

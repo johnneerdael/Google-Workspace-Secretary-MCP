@@ -1,0 +1,48 @@
+<!-- HTMX partial for email list rows -->
+{% for email in emails %}
+<a href="/thread/{{ email.folder }}/{{ email.uid }}" 
+   class="block hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+    <div class="px-4 py-4 sm:px-6">
+        <div class="flex items-center justify-between">
+            <div class="flex items-center min-w-0 flex-1">
+                {% if email.is_unread %}
+                <span class="w-2 h-2 bg-primary rounded-full mr-3 flex-shrink-0"></span>
+                {% else %}
+                <span class="w-2 h-2 mr-3 flex-shrink-0"></span>
+                {% endif %}
+                
+                <p class="text-sm font-medium text-gray-900 dark:text-white truncate w-48 flex-shrink-0 {% if email.is_unread %}font-semibold{% endif %}">
+                    {{ email.from_name or email.from_addr }}
+                </p>
+                
+                <div class="ml-4 min-w-0 flex-1">
+                    <p class="text-sm text-gray-900 dark:text-white truncate {% if email.is_unread %}font-semibold{% endif %}">
+                        {{ email.subject }}
+                        {% if email.preview %}
+                        <span class="text-gray-500 dark:text-gray-400 font-normal"> — {{ email.preview }}</span>
+                        {% endif %}
+                    </p>
+                </div>
+            </div>
+            
+            <div class="ml-4 flex items-center space-x-2 flex-shrink-0">
+                {% if email.has_attachments %}
+                <span class="text-gray-400" title="Has attachments">📎</span>
+                {% endif %}
+                <span class="text-sm text-gray-500 dark:text-gray-400">{{ email.date }}</span>
+            </div>
+        </div>
+    </div>
+</a>
+{% endfor %}
+
+{% if has_more %}
+<div class="px-4 py-3 text-center">
+    <button hx-get="/api/emails?page={{ page + 1 }}"
+            hx-target="this"
+            hx-swap="outerHTML"
+            class="text-sm text-primary hover:text-primary/80">
+        Load more...
+    </button>
+</div>
+{% endif %}
