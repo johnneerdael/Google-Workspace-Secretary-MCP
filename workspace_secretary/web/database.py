@@ -67,7 +67,7 @@ def get_thread(uid: int, folder: str) -> list[dict]:
     with get_conn() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
-                "SELECT message_id, in_reply_to, refs FROM emails WHERE uid = %s AND folder = %s",
+                "SELECT message_id, in_reply_to, references_header FROM emails WHERE uid = %s AND folder = %s",
                 (uid, folder),
             )
             row = cur.fetchone()
@@ -75,28 +75,30 @@ def get_thread(uid: int, folder: str) -> list[dict]:
                 return []
 
             message_id = row["message_id"]
-            in_reply_to = row["in_reply_to"]
-            refs = row["refs"] or []
+            in_reply_to = row["in_reply_to"] or ""
+            references = row["references_header"] or ""
 
-            thread_ids = set(refs + [message_id, in_reply_to])
-            thread_ids.discard(None)
-            thread_ids.discard("")
+            related_ids = set()
+            if message_id:
+                related_ids.add(message_id)
+            for ref in (in_reply_to + " " + references).split():
+                if ref:
+                    related_ids.add(ref)
 
-            if not thread_ids:
+            if not related_ids:
                 cur.execute(
                     "SELECT * FROM emails WHERE uid = %s AND folder = %s", (uid, folder)
                 )
                 single = cur.fetchone()
                 return [single] if single else []
 
-            placeholders = ",".join(["%s"] * len(thread_ids))
             cur.execute(
-                f"""
+                """
                 SELECT * FROM emails 
                 WHERE message_id = ANY(%s) OR in_reply_to = ANY(%s)
                 ORDER BY date ASC
             """,
-                (list(thread_ids), list(thread_ids)),
+                (list(related_ids), list(related_ids)),
             )
             return cur.fetchall()
 
