@@ -373,6 +373,8 @@ async def embeddings_loop():
     max_consecutive_failures = 5
     cooldown_minutes = 10
 
+    logger.info(f"Embeddings loop started, interval={embeddings_interval}s")
+
     while state.running:
         try:
             if state._embeddings_cooldown_until:
@@ -559,14 +561,16 @@ async def sync_emails():
 async def generate_embeddings():
     """Generate embeddings for emails that don't have them yet."""
     if not state.database or not state.database.supports_embeddings():
+        logger.debug("Embeddings: database doesn't support embeddings")
         return
 
-    # Check if embeddings are configured
     if not state.config or not state.config.database.embeddings:
+        logger.debug("Embeddings: not configured in config.yaml")
         return
 
     embeddings_config = state.config.database.embeddings
     if not embeddings_config.enabled:
+        logger.debug("Embeddings: disabled in config")
         return
 
     # Get folders to process
