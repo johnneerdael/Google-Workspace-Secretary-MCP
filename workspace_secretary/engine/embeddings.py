@@ -9,6 +9,7 @@ local models via Ollama/vLLM, etc.).
 import asyncio
 import hashlib
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -411,7 +412,10 @@ class EmbeddingsSyncWorker:
 
 
 class CohereEmbeddingsClient:
-    """Native Cohere embeddings client with input_type support."""
+    """Native Cohere embeddings client with input_type support and rate limiting."""
+
+    TOKENS_PER_MINUTE = 100_000
+    CHARS_PER_TOKEN = 4
 
     def __init__(
         self,
@@ -436,6 +440,32 @@ class CohereEmbeddingsClient:
         self.truncate = truncate
         self.max_chars = max_chars
         self._closed = False
+        self._tokens_used_this_minute = 0
+        self._minute_start = time.monotonic()
+        self._rate_limit_lock = asyncio.Lock()
+
+    def _estimate_tokens(self, texts: list[str]) -> int:
+        return sum(len(t) // self.CHARS_PER_TOKEN + 1 for t in texts)
+
+    async def _wait_for_rate_limit(self, estimated_tokens: int) -> None:
+        async with self._rate_limit_lock:
+            now = time.monotonic()
+            elapsed = now - self._minute_start
+            if elapsed >= 60:
+                self._tokens_used_this_minute = 0
+                self._minute_start = now
+
+            if (
+                self._tokens_used_this_minute + estimated_tokens
+                > self.TOKENS_PER_MINUTE
+            ):
+                wait_time = 60 - elapsed + 1
+                logger.info(f"Rate limit approaching, waiting {wait_time:.1f}s")
+                await asyncio.sleep(wait_time)
+                self._tokens_used_this_minute = 0
+                self._minute_start = time.monotonic()
+
+            self._tokens_used_this_minute += estimated_tokens
 
     async def close(self) -> None:
         self._closed = True
@@ -491,18 +521,37 @@ class CohereEmbeddingsClient:
             ]
 
         content_hashes = [self._compute_hash(t) for t in filtered_texts]
+        estimated_tokens = self._estimate_tokens(filtered_texts)
+        await self._wait_for_rate_limit(estimated_tokens)
 
-        try:
-            response = self.client.embed(
-                texts=filtered_texts,
-                model=self.model,
-                input_type=self.input_type,
-                embedding_types=["float"],
-                truncate=self.truncate,
-            )
-        except Exception as e:
-            logger.error(f"Cohere embeddings API error: {e}")
-            raise
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = self.client.embed(
+                    texts=filtered_texts,
+                    model=self.model,
+                    input_type=self.input_type,
+                    embedding_types=["float"],
+                    truncate=self.truncate,
+                )
+                break
+            except Exception as e:
+                if "429" in str(e) or "rate limit" in str(e).lower():
+                    wait_time = (2**attempt) * 15
+                    logger.warning(
+                        f"Rate limited, waiting {wait_time}s (attempt {attempt + 1}/{max_retries})"
+                    )
+                    await asyncio.sleep(wait_time)
+                    self._tokens_used_this_minute = 0
+                    self._minute_start = time.monotonic()
+                    if attempt == max_retries - 1:
+                        logger.error(
+                            f"Cohere embeddings API error after {max_retries} retries: {e}"
+                        )
+                        raise
+                else:
+                    logger.error(f"Cohere embeddings API error: {e}")
+                    raise
 
         embeddings = response.embeddings.float_ or []
         results = []
