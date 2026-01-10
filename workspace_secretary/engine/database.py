@@ -148,6 +148,11 @@ class DatabaseInterface(ABC):
         pass
 
     @abstractmethod
+    def get_synced_uids(self, folder: str) -> list[int]:
+        """Get all UIDs synced for a folder."""
+        pass
+
+    @abstractmethod
     def get_synced_folders(self) -> list[dict[str, Any]]:
         """Get list of all synced folders with their state."""
         pass
@@ -614,6 +619,11 @@ class SqliteDatabase(DatabaseInterface):
                 "SELECT COUNT(*) FROM emails WHERE folder = ?", (folder,)
             )
             return cursor.fetchone()[0]
+
+    def get_synced_uids(self, folder: str) -> list[int]:
+        with self._get_email_connection() as conn:
+            cursor = conn.execute("SELECT uid FROM emails WHERE folder = ?", (folder,))
+            return [row[0] for row in cursor.fetchall()]
 
     def get_synced_folders(self) -> list[dict[str, Any]]:
         """Get list of all synced folders with their state."""
@@ -1109,6 +1119,12 @@ class PostgresDatabase(DatabaseInterface):
             with conn.cursor() as cur:
                 cur.execute("SELECT COUNT(*) FROM emails WHERE folder = %s", (folder,))
                 return cur.fetchone()[0]
+
+    def get_synced_uids(self, folder: str) -> list[int]:
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT uid FROM emails WHERE folder = %s", (folder,))
+                return [row[0] for row in cur.fetchall()]
 
     def get_synced_folders(self) -> list[dict[str, Any]]:
         """Get list of all synced folders with their state."""
