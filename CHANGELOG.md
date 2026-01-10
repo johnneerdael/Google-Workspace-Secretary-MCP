@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.2.3] - 2026-01-10
+
+### Fixed
+
+- **IDLE Event Loop Blocking**: IMAP IDLE operations now run on a dedicated thread
+  - `select_folder`, `idle_start`, `idle_check`, `idle_done` were blocking the asyncio event loop for up to 25 minutes
+  - Sync loop would hang immediately after startup, never executing the main sync
+  - New `_idle_worker()` runs entire IDLE loop on separate thread with clean shutdown coordination
+  - Uses `loop.call_soon_threadsafe()` to schedule syncs back to the event loop
+  - `sync_emails()` now wrapped in `run_in_executor` to avoid blocking
+
 ## [4.2.2] - 2026-01-10
 
 ### Fixed
