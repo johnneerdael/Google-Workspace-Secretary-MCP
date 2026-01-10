@@ -716,6 +716,13 @@ class PostgresDatabase(DatabaseInterface):
         self.embedding_dimensions = embedding_dimensions
         self._pool: Any = None
 
+        # Use halfvec for dimensions > 2000 (HNSW index limit for regular vector)
+        # halfvec uses 16-bit floats, allowing up to ~4000 dimensions
+        self._vector_type = "halfvec" if embedding_dimensions > 2000 else "vector"
+        self._vector_ops = (
+            "halfvec_ip_ops" if embedding_dimensions > 2000 else "vector_ip_ops"
+        )
+
     def _get_connection_string(self) -> str:
         return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.database}?sslmode={self.ssl_mode}"
 
@@ -788,12 +795,13 @@ class PostgresDatabase(DatabaseInterface):
                 )
 
                 # Create embeddings table with vector column
+                # Use halfvec for dimensions > 2000 (HNSW limit is ~2000 for 32-bit vector)
                 cur.execute(
                     f"""
                     CREATE TABLE IF NOT EXISTS email_embeddings (
                         email_uid INTEGER NOT NULL,
                         email_folder TEXT NOT NULL,
-                        embedding vector({self.embedding_dimensions}),
+                        embedding {self._vector_type}({self.embedding_dimensions}),
                         model TEXT,
                         content_hash TEXT,
                         created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -833,12 +841,13 @@ class PostgresDatabase(DatabaseInterface):
                 )
 
                 # Create HNSW index for vector similarity search
-                # Using inner product (vector_ip_ops) - faster than cosine for normalized vectors
+                # Using inner product (*_ip_ops) - faster than cosine for normalized vectors
                 # All vectors are L2-normalized before storage, so inner product = cosine similarity
+                # Use halfvec_ip_ops for halfvec columns (dimensions > 2000)
                 cur.execute(
-                    """
+                    f"""
                     CREATE INDEX IF NOT EXISTS idx_embeddings_vector 
-                    ON email_embeddings USING hnsw (embedding vector_ip_ops)
+                    ON email_embeddings USING hnsw (embedding {self._vector_ops})
                     """
                 )
 
@@ -1263,12 +1272,12 @@ class PostgresDatabase(DatabaseInterface):
             with conn.cursor() as cur:
                 cur.execute(
                     f"""
-                    SELECT e.*, -(emb.embedding <#> %s::vector) as similarity
+                    SELECT e.*, -(emb.embedding <#> %s::{self._vector_type}) as similarity
                     FROM emails e
                     JOIN email_embeddings emb ON e.uid = emb.email_uid AND e.folder = emb.email_folder
-                    WHERE -(emb.embedding <#> %s::vector) >= %s
+                    WHERE -(emb.embedding <#> %s::{self._vector_type}) >= %s
                     {"AND emb.email_folder = %s" if folder else ""}
-                    ORDER BY emb.embedding <#> %s::vector
+                    ORDER BY emb.embedding <#> %s::{self._vector_type}
                     LIMIT %s
                     """,
                     (
@@ -1324,7 +1333,7 @@ class PostgresDatabase(DatabaseInterface):
         This prevents "vector drift" by ensuring results match metadata constraints
         before applying semantic similarity ranking.
         """
-        conditions = ["-(emb.embedding <#> %s::vector) >= %s"]
+        conditions = [f"-(emb.embedding <#> %s::{self._vector_type}) >= %s"]
         params: list[Any] = [query_embedding, similarity_threshold]
 
         if folder:
@@ -1357,11 +1366,11 @@ class PostgresDatabase(DatabaseInterface):
             with conn.cursor() as cur:
                 cur.execute(
                     f"""
-                    SELECT e.*, -(emb.embedding <#> %s::vector) as similarity
+                    SELECT e.*, -(emb.embedding <#> %s::{self._vector_type}) as similarity
                     FROM emails e
                     JOIN email_embeddings emb ON e.uid = emb.email_uid AND e.folder = emb.email_folder
                     WHERE {" AND ".join(conditions)}
-                    ORDER BY emb.embedding <#> %s::vector
+                    ORDER BY emb.embedding <#> %s::{self._vector_type}
                     LIMIT %s
                     """,
                     tuple(params),

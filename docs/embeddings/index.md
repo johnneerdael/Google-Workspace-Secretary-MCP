@@ -27,7 +27,8 @@ Gmail Secretary supports AI-powered semantic search using vector embeddings. Ins
 | **Provider** | Gemini (default) | Best quality/cost ratio, 3072 dims, generous free tier |
 | **Dimensions** | 3072 | Captures nuances in business emails and professional jargon |
 | **Normalization** | All vectors L2-normalized | Enables faster inner product search |
-| **Index** | HNSW with `vector_ip_ops` | Inner product is faster than cosine for normalized vectors |
+| **Index** | HNSW with `vector_ip_ops` / `halfvec_ip_ops` | Inner product is faster than cosine for normalized vectors |
+| **Vector Type** | `halfvec` for dims > 2000 | 16-bit quantization allows HNSW indexing up to ~4000 dims |
 | **Search** | Metadata-augmented | Hard filters prevent "vector drift" |
 
 ### Metadata-Augmented Search
@@ -55,6 +56,19 @@ This prevents "vector drift" where search finds semantically similar content fro
 
 ::: danger Important: Choose Dimensions Carefully
 **Dimension size cannot be changed after initial sync without re-embedding all emails.** See [Migration Guide](#migration-guide) if you need to change dimensions later.
+:::
+
+### Automatic Quantization for High Dimensions
+
+pgvector's HNSW index has a ~2000 dimension limit for 32-bit vectors (8KB block size). Gmail Secretary **automatically handles this** by using `halfvec` (16-bit scalar quantization) for dimensions > 2000:
+
+| Dimensions | Vector Type | Index Ops | Notes |
+|------------|-------------|-----------|-------|
+| ≤ 2000 | `vector` (32-bit) | `vector_ip_ops` | Standard precision |
+| > 2000 | `halfvec` (16-bit) | `halfvec_ip_ops` | Quantized, ~0.1% recall loss |
+
+::: tip No Configuration Needed
+This is automatic. Just set your desired `dimensions` in config and the system chooses the correct vector type.
 :::
 
 | Dimensions | MTEB Score | Storage (25k emails) | Best For |

@@ -11,6 +11,7 @@ from psycopg.rows import dict_row
 logger = logging.getLogger(__name__)
 
 _pool = None
+_vector_type = None  # Cached vector type (vector or halfvec)
 
 
 def get_pool():
@@ -25,6 +26,25 @@ def get_pool():
         _pool = psycopg_pool.ConnectionPool(conninfo, min_size=1, max_size=5)
         logger.info("Web UI database pool initialized")
     return _pool
+
+
+def get_vector_type() -> str:
+    """Get the vector type based on embedding dimensions config.
+
+    Returns 'halfvec' for dimensions > 2000 (HNSW index limit), otherwise 'vector'.
+    """
+    global _vector_type
+    if _vector_type is None:
+        from workspace_secretary.config import load_config
+
+        config = load_config()
+        dims = (
+            config.database.embeddings.dimensions
+            if config.database.embeddings
+            else 1536
+        )
+        _vector_type = "halfvec" if dims > 2000 else "vector"
+    return _vector_type
 
 
 @contextmanager
@@ -126,17 +146,18 @@ def semantic_search(
     query_embedding: list[float], folder: str, limit: int, threshold: float = 0.5
 ) -> list[dict]:
     """Semantic search using inner product on normalized vectors."""
+    vtype = get_vector_type()
     with get_conn() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
-                """
+                f"""
                 SELECT e.uid, e.folder, e.from_addr, e.subject, 
                        LEFT(e.body_text, 200) as preview, e.date, e.is_unread,
-                       -(emb.embedding <#> %s::vector) as similarity
+                       -(emb.embedding <#> %s::{vtype}) as similarity
                 FROM email_embeddings emb
                 JOIN emails e ON e.uid = emb.uid AND e.folder = emb.folder
-                WHERE e.folder = %s AND -(emb.embedding <#> %s::vector) > %s
-                ORDER BY emb.embedding <#> %s::vector LIMIT %s
+                WHERE e.folder = %s AND -(emb.embedding <#> %s::{vtype}) > %s
+                ORDER BY emb.embedding <#> %s::{vtype} LIMIT %s
             """,
                 (
                     query_embedding,
@@ -228,7 +249,8 @@ def semantic_search_advanced(
     threshold: float = 0.5,
 ) -> list[dict]:
     """Semantic search with advanced metadata filters using inner product."""
-    conditions = ["e.folder = %s", "-(emb.embedding <#> %s::vector) > %s"]
+    vtype = get_vector_type()
+    conditions = ["e.folder = %s", f"-(emb.embedding <#> %s::{vtype}) > %s"]
     params: list = [folder, query_embedding, threshold]
 
     if filters.get("from_addr"):
@@ -256,11 +278,11 @@ def semantic_search_advanced(
     sql = f"""
         SELECT e.uid, e.folder, e.from_addr, e.subject, 
                LEFT(e.body_text, 200) as preview, e.date, e.is_unread, e.has_attachments,
-               -(emb.embedding <#> %s::vector) as similarity
+               -(emb.embedding <#> %s::{vtype}) as similarity
         FROM email_embeddings emb
         JOIN emails e ON e.uid = emb.uid AND e.folder = emb.folder
         WHERE {" AND ".join(conditions)}
-        ORDER BY emb.embedding <#> %s::vector LIMIT %s
+        ORDER BY emb.embedding <#> %s::{vtype} LIMIT %s
     """
 
     with get_conn() as conn:
@@ -306,6 +328,7 @@ def get_search_suggestions(query: str, limit: int = 5) -> list[dict]:
 
 
 def find_related_emails(uid: int, folder: str, limit: int = 5) -> list[dict]:
+    vtype = get_vector_type()
     with get_conn() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
@@ -318,15 +341,15 @@ def find_related_emails(uid: int, folder: str, limit: int = 5) -> list[dict]:
 
             embedding = row["embedding"]
             cur.execute(
-                """
+                f"""
                 SELECT e.uid, e.folder, e.from_addr, e.subject, 
                        LEFT(e.body_text, 150) as preview, e.date,
-                       -(emb.embedding <#> %s::vector) as similarity
+                       -(emb.embedding <#> %s::{vtype}) as similarity
                 FROM email_embeddings emb
                 JOIN emails e ON e.uid = emb.uid AND e.folder = emb.folder
                 WHERE NOT (e.uid = %s AND e.folder = %s)
-                  AND -(emb.embedding <#> %s::vector) > 0.6
-                ORDER BY emb.embedding <#> %s::vector LIMIT %s
+                  AND -(emb.embedding <#> %s::{vtype}) > 0.6
+                ORDER BY emb.embedding <#> %s::{vtype} LIMIT %s
             """,
                 (embedding, uid, folder, embedding, embedding, limit),
             )

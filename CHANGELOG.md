@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.3.2] - 2026-01-10
+
+### Added
+
+- **halfvec Support for High Dimensions**: Automatic 16-bit quantization for dimensions > 2000
+  - Enables HNSW indexing for 3072-dimension embeddings (pgvector limit is ~2000 for 32-bit)
+  - Uses `halfvec` type with `halfvec_ip_ops` operator class automatically
+  - Negligible recall loss (~0.1%) with 50% storage savings
+  - No configuration needed - system auto-detects based on `dimensions` setting
+
+### Fixed
+
+- **HNSW Index Error**: Fixed "column cannot have more than 2000 dimensions for hnsw index" error when using 3072 dimensions
+
 ## [4.3.1] - 2026-01-10
 
 ### Fixed
