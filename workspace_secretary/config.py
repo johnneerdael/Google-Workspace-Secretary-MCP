@@ -377,11 +377,15 @@ class EmbeddingsConfig:
     """Embeddings configuration for semantic search."""
 
     enabled: bool = False
+    provider: str = "openai_compat"  # openai_compat | cohere
     endpoint: str = "https://api.openai.com/v1/embeddings"
     model: str = "text-embedding-3-small"
     api_key: str = ""
     dimensions: int = 1536
     batch_size: int = 100
+    max_chars: int = 500000
+    input_type: str = "search_document"  # Cohere: search_document | search_query
+    truncate: str = "END"  # Cohere: NONE | START | END
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "EmbeddingsConfig":
@@ -392,11 +396,15 @@ class EmbeddingsConfig:
         )
         return cls(
             enabled=data.get("enabled", False),
+            provider=data.get("provider", "openai_compat"),
             endpoint=data.get("endpoint", "https://api.openai.com/v1/embeddings"),
             model=data.get("model", "text-embedding-3-small"),
             api_key=api_key,
             dimensions=data.get("dimensions", 1536),
             batch_size=data.get("batch_size", 100),
+            max_chars=data.get("max_chars", 500000),
+            input_type=data.get("input_type", "search_document"),
+            truncate=data.get("truncate", "END"),
         )
 
 

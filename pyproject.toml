@@ -50,6 +50,9 @@ postgres = [
     "psycopg[binary]>=3.1.0",
     "psycopg-pool>=3.1.0",
 ]
+cohere = [
+    "cohere>=5.0.0",
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=3.0.0",

@@ -40,6 +40,7 @@ class EmbeddingsClient:
         batch_size: int = 100,
         timeout: float = 30.0,
         max_concurrent: int = 4,
+        max_chars: int = 500000,
     ):
         """Initialize embeddings client.
 
@@ -51,6 +52,7 @@ class EmbeddingsClient:
             batch_size: Maximum texts per batch request
             timeout: Request timeout in seconds
             max_concurrent: Maximum concurrent embedding requests
+            max_chars: Maximum characters per text (for truncation)
         """
         self.endpoint = endpoint.rstrip("/")
         self.model = model
@@ -59,6 +61,7 @@ class EmbeddingsClient:
         self.batch_size = batch_size
         self.timeout = timeout
         self.max_concurrent = max_concurrent
+        self.max_chars = max_chars
 
         if not self.endpoint.endswith("/embeddings"):
             self.embeddings_url = f"{self.endpoint}/embeddings"
@@ -109,10 +112,7 @@ class EmbeddingsClient:
 
         text = "\n".join(parts)
 
-        # Truncate to ~4000 tokens (roughly 16000 chars for English)
-        # text-embedding-3-small has 8192 token limit
-        # Being conservative because code/URLs/special chars tokenize to more tokens
-        max_chars = 16000
+        max_chars = self.max_chars
         if len(text) > max_chars:
             text = text[:max_chars]
 
@@ -406,18 +406,148 @@ class EmbeddingsSyncWorker:
             await asyncio.sleep(interval)
 
 
-def create_embeddings_client(config: Any) -> Optional[EmbeddingsClient]:
-    """Create embeddings client from config if enabled.
+class CohereEmbeddingsClient:
+    """Native Cohere embeddings client with input_type support."""
 
-    Args:
-        config: EmbeddingsConfig from server configuration
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "embed-v4.0",
+        dimensions: int = 1536,
+        batch_size: int = 96,
+        input_type: str = "search_document",
+        truncate: str = "END",
+        max_chars: int = 500000,
+    ):
+        try:
+            import cohere
+        except ImportError:
+            raise ImportError("cohere package required: pip install cohere")
 
-    Returns:
-        EmbeddingsClient if enabled, None otherwise
-    """
+        self.client = cohere.ClientV2(api_key=api_key)
+        self.model = model
+        self.dimensions = dimensions
+        self.batch_size = batch_size
+        self.input_type = input_type
+        self.truncate = truncate
+        self.max_chars = max_chars
+        self._closed = False
+
+    async def close(self) -> None:
+        self._closed = True
+
+    def _compute_hash(self, text: str) -> str:
+        return hashlib.sha256(text.encode()).hexdigest()[:32]
+
+    def _prepare_text(self, subject: Optional[str], body: str) -> str:
+        parts = []
+        if subject:
+            parts.append(f"Subject: {subject}")
+        if body:
+            clean_body = " ".join(body.split())
+            parts.append(clean_body)
+        text = "\n".join(parts)
+        if len(text) > self.max_chars:
+            text = text[: self.max_chars]
+        return text
+
+    async def embed_text(self, text: str) -> EmbeddingResult:
+        results = await self.embed_texts([text])
+        return results[0]
+
+    async def embed_texts(self, texts: list[str]) -> list[EmbeddingResult]:
+        if not texts:
+            return []
+
+        results: list[EmbeddingResult] = []
+        for i in range(0, len(texts), self.batch_size):
+            batch = texts[i : i + self.batch_size]
+            batch_results = await self._embed_batch(batch)
+            results.extend(batch_results)
+        return results
+
+    async def _embed_batch(self, texts: list[str]) -> list[EmbeddingResult]:
+        def is_valid_text(t: str) -> bool:
+            if not t or not t.strip():
+                return False
+            stripped = t.strip()
+            return len(stripped) >= 3 and any(c.isalnum() for c in stripped)
+
+        filtered_texts = [t.strip() for t in texts if is_valid_text(t)]
+        if not filtered_texts:
+            return [
+                EmbeddingResult(
+                    text=t if t else "",
+                    embedding=[],
+                    model=self.model,
+                    content_hash="",
+                    tokens_used=0,
+                )
+                for t in texts
+            ]
+
+        content_hashes = [self._compute_hash(t) for t in filtered_texts]
+
+        try:
+            response = self.client.embed(
+                texts=filtered_texts,
+                model=self.model,
+                input_type=self.input_type,
+                embedding_types=["float"],
+                truncate=self.truncate,
+            )
+        except Exception as e:
+            logger.error(f"Cohere embeddings API error: {e}")
+            raise
+
+        embeddings = response.embeddings.float_ or []
+        results = []
+        for i, embedding in enumerate(embeddings):
+            results.append(
+                EmbeddingResult(
+                    text=filtered_texts[i],
+                    embedding=list(embedding),
+                    model=self.model,
+                    content_hash=content_hashes[i],
+                    tokens_used=0,
+                )
+            )
+        return results
+
+    async def embed_email(self, subject: Optional[str], body: str) -> EmbeddingResult:
+        text = self._prepare_text(subject, body)
+        return await self.embed_text(text)
+
+    async def embed_emails(self, emails: list[dict[str, Any]]) -> list[EmbeddingResult]:
+        texts = [
+            self._prepare_text(e.get("subject"), e.get("body_text", "")) for e in emails
+        ]
+        return await self.embed_texts(texts)
+
+
+def create_embeddings_client(
+    config: Any,
+) -> Optional[EmbeddingsClient | CohereEmbeddingsClient]:
     if not config.enabled:
         return None
 
+    provider = getattr(config, "provider", "openai_compat")
+
+    if provider == "cohere":
+        if not config.api_key:
+            logger.warning("Cohere embeddings enabled but no api_key configured")
+            return None
+        return CohereEmbeddingsClient(
+            api_key=config.api_key,
+            model=config.model,
+            dimensions=config.dimensions,
+            batch_size=config.batch_size,
+            input_type=getattr(config, "input_type", "search_document"),
+            truncate=getattr(config, "truncate", "END"),
+            max_chars=getattr(config, "max_chars", 500000),
+        )
+
+    # Default: OpenAI-compatible
     if not config.endpoint:
         logger.warning("Embeddings enabled but no endpoint configured")
         return None
@@ -428,4 +558,5 @@ def create_embeddings_client(config: Any) -> Optional[EmbeddingsClient]:
         api_key=config.api_key,
         dimensions=config.dimensions,
         batch_size=config.batch_size,
+        max_chars=getattr(config, "max_chars", 500000),
     )
