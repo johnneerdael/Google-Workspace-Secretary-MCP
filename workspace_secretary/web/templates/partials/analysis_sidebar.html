@@ -1,0 +1,118 @@
+<div class="space-y-4">
+    <div class="bg-gray-900 rounded-lg p-4">
+        <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold text-white">Priority</h3>
+            <span class="px-2 py-1 text-xs font-medium rounded
+                {% if priority == 'high' %}bg-red-600 text-white
+                {% elif priority == 'medium' %}bg-yellow-600 text-white
+                {% else %}bg-gray-700 text-gray-300{% endif %}">
+                {{ priority|upper }}
+            </span>
+        </div>
+        <p class="text-xs text-gray-400">{{ priority_reason }}</p>
+    </div>
+
+    <div class="bg-gray-900 rounded-lg p-4">
+        <h3 class="text-sm font-semibold text-white mb-3">Signals</h3>
+        <div class="space-y-2">
+            {% if signals.is_from_vip %}
+            <div class="flex items-center text-xs">
+                <span class="text-yellow-400 mr-2">⭐</span>
+                <span class="text-gray-300">VIP Sender</span>
+            </div>
+            {% endif %}
+            {% if signals.is_addressed_to_me %}
+            <div class="flex items-center text-xs">
+                <span class="text-blue-400 mr-2">📬</span>
+                <span class="text-gray-300">Addressed to you</span>
+            </div>
+            {% endif %}
+            {% if signals.mentions_my_name %}
+            <div class="flex items-center text-xs">
+                <span class="text-purple-400 mr-2">👤</span>
+                <span class="text-gray-300">Mentions your name</span>
+            </div>
+            {% endif %}
+            {% if signals.has_question %}
+            <div class="flex items-center text-xs">
+                <span class="text-green-400 mr-2">❓</span>
+                <span class="text-gray-300">Contains question</span>
+            </div>
+            {% endif %}
+            {% if signals.mentions_deadline %}
+            <div class="flex items-center text-xs">
+                <span class="text-red-400 mr-2">⏰</span>
+                <span class="text-gray-300">Mentions deadline</span>
+            </div>
+            {% endif %}
+            {% if signals.mentions_meeting %}
+            <div class="flex items-center text-xs">
+                <span class="text-cyan-400 mr-2">📅</span>
+                <span class="text-gray-300">Meeting-related</span>
+            </div>
+            {% endif %}
+            {% if signals.is_important %}
+            <div class="flex items-center text-xs">
+                <span class="text-orange-400 mr-2">🔥</span>
+                <span class="text-gray-300">Marked important</span>
+            </div>
+            {% endif %}
+            {% if not signals.is_from_vip and not signals.is_addressed_to_me and not signals.has_question and not signals.mentions_deadline and not signals.mentions_meeting %}
+            <p class="text-xs text-gray-500 italic">No notable signals detected</p>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if suggested_actions %}
+    <div class="bg-gray-900 rounded-lg p-4">
+        <h3 class="text-sm font-semibold text-white mb-3">Suggested Actions</h3>
+        <div class="space-y-2">
+            {% for action in suggested_actions %}
+            <button class="w-full flex items-center px-3 py-2 text-xs text-left text-gray-300 bg-gray-800 hover:bg-gray-700 rounded transition-colors"
+                    {% if action.action == 'reply' %}
+                    hx-get="/compose?reply_to={{ uid }}&folder={{ folder }}"
+                    hx-target="body"
+                    hx-swap="beforeend"
+                    {% elif action.action == 'calendar' %}
+                    onclick="window.location.href='/calendar'"
+                    {% elif action.action == 'archive' %}
+                    hx-post="/api/email/move/{{ folder }}/{{ uid }}?destination=[Gmail]/All Mail"
+                    hx-swap="none"
+                    hx-on::after-request="window.location.href='/inbox'"
+                    {% endif %}>
+                <span class="mr-2">{{ action.icon }}</span>
+                {{ action.label }}
+            </button>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    {% if has_embeddings %}
+    <div class="bg-gray-900 rounded-lg p-4">
+        <h3 class="text-sm font-semibold text-white mb-3">Related Emails</h3>
+        {% if related_emails %}
+        <div class="space-y-2">
+            {% for email in related_emails %}
+            <a href="/thread/{{ email.folder }}/{{ email.uid }}" 
+               class="block p-2 bg-gray-800 hover:bg-gray-700 rounded transition-colors">
+                <div class="flex items-center justify-between mb-1">
+                    <span class="text-xs text-gray-400 truncate flex-1">{{ email.from_addr.split('<')[0]|truncate(20) }}</span>
+                    <span class="text-xs text-green-400 ml-2">{{ email.similarity }}%</span>
+                </div>
+                <p class="text-xs text-gray-300 truncate">{{ email.subject }}</p>
+            </a>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="text-xs text-gray-500 italic">No related emails found</p>
+        {% endif %}
+    </div>
+    {% else %}
+    <div class="bg-gray-900 rounded-lg p-4">
+        <h3 class="text-sm font-semibold text-white mb-2">Related Emails</h3>
+        <p class="text-xs text-gray-500 italic">Semantic search not available</p>
+        <p class="text-xs text-gray-600 mt-1">Enable embeddings in config for AI-powered related email discovery</p>
+    </div>
+    {% endif %}
+</div>

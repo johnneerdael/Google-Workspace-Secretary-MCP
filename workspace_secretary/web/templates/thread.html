@@ -2,148 +2,168 @@
 {% block title %}{{ subject }} - Secretary{% endblock %}
 
 {% block content %}
-<div class="space-y-4" x-data="{ showActions: false, deletedUid: null, deletedFolder: null }">
-    <div class="flex items-start justify-between">
-        <div class="flex items-start space-x-4">
-            <a href="/inbox" class="mt-1 text-gray-400 hover:text-gray-200">
-                ← Back
-            </a>
-            <h1 class="text-xl font-bold flex-1">{{ subject }}</h1>
-        </div>
-        <div class="flex items-center space-x-2">
-            <button hx-post="/api/email/toggle-read/{{ folder }}/{{ uid }}" 
-                    hx-swap="none"
-                    class="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-md" 
-                    title="Toggle read/unread">
-                ✉️
-            </button>
-            <button @click="showActions = !showActions" 
-                    class="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-md"
-                    title="More actions">
-                ⋯
-            </button>
-            <div x-show="showActions" @click.outside="showActions = false" x-cloak
-                 class="absolute right-4 mt-32 w-48 bg-gray-900 border border-gray-700 rounded-md shadow-lg z-10">
-                <button hx-post="/api/email/move/{{ folder }}/{{ uid }}?destination=[Gmail]/All Mail"
-                        hx-swap="none"
-                        hx-on::after-request="window.location.href='/inbox'"
-                        class="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-gray-800">
-                    📥 Archive
-                </button>
-                <button @click="deletedUid = '{{ uid }}'; deletedFolder = '{{ folder }}'"
-                        hx-post="/api/email/move/{{ folder }}/{{ uid }}?destination=[Gmail]/Trash"
-                        hx-swap="none"
-                        hx-on::after-request="window.showUndoToast('Email deleted', deletedUid, deletedFolder, '[Gmail]/Trash')"
-                        class="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-gray-800">
-                    🗑️ Delete
-                </button>
-                <button hx-post="/api/email/move/{{ folder }}/{{ uid }}?destination=[Gmail]/Spam"
-                        hx-swap="none"
-                        hx-on::after-request="window.location.href='/inbox'"
-                        class="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-gray-800">
-                    ⚠️ Spam
-                </button>
+<div class="flex gap-6" x-data="{ showActions: false, deletedUid: null, deletedFolder: null, showAnalysis: true }">
+    <div class="flex-1 space-y-4">
+        <div class="flex items-start justify-between">
+            <div class="flex items-start space-x-4">
+                <a href="/inbox" class="mt-1 text-gray-400 hover:text-gray-200">
+                    ← Back
+                </a>
+                <h1 class="text-xl font-bold flex-1">{{ subject }}</h1>
             </div>
-        </div>
-    </div>
-
-    <div class="space-y-4">
-        {% for message in messages %}
-        <div class="bg-gray-900 rounded-lg overflow-hidden" 
-             x-data="{ expanded: {{ 'true' if loop.last else 'false' }} }">
-            <div class="px-4 py-3 border-b border-gray-800 cursor-pointer hover:bg-gray-800"
-                 @click="expanded = !expanded">
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center space-x-3">
-                        <div class="w-10 h-10 rounded-full bg-primary flex items-center justify-center text-white font-medium">
-                            {{ message.from_name[0] if message.from_name else '?' }}
-                        </div>
-                        <div>
-                            <p class="text-sm font-medium text-white">
-                                {{ message.from_name or message.from_addr }}
-                            </p>
-                            <p class="text-xs text-gray-500">
-                                to {{ message.to_addr[:50] }}{% if message.to_addr|length > 50 %}...{% endif %}
-                                {% if message.cc_addr %}
-                                <span class="ml-1">cc: {{ message.cc_addr[:30] }}{% if message.cc_addr|length > 30 %}...{% endif %}</span>
-                                {% endif %}
-                            </p>
-                        </div>
-                    </div>
-                    <div class="flex items-center space-x-2">
-                        {% if message.has_attachments %}
-                        <span class="text-gray-500" title="Has attachments">📎</span>
-                        {% endif %}
-                        <span class="text-sm text-gray-500">{{ message.date }}</span>
-                        <span class="text-gray-500" x-text="expanded ? '▼' : '▶'"></span>
-                    </div>
+            <div class="flex items-center space-x-2">
+                <button @click="showAnalysis = !showAnalysis"
+                        class="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-md"
+                        :class="{ 'bg-gray-800 text-primary': showAnalysis }"
+                        title="Toggle AI Analysis">
+                    🤖
+                </button>
+                <button hx-post="/api/email/toggle-read/{{ folder }}/{{ uid }}" 
+                        hx-swap="none"
+                        class="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-md" 
+                        title="Toggle read/unread">
+                    ✉️
+                </button>
+                <button @click="showActions = !showActions" 
+                        class="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-md"
+                        title="More actions">
+                    ⋯
+                </button>
+                <div x-show="showActions" @click.outside="showActions = false" x-cloak
+                     class="absolute right-4 mt-32 w-48 bg-gray-900 border border-gray-700 rounded-md shadow-lg z-10">
+                    <button hx-post="/api/email/move/{{ folder }}/{{ uid }}?destination=[Gmail]/All Mail"
+                            hx-swap="none"
+                            hx-on::after-request="window.location.href='/inbox'"
+                            class="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-gray-800">
+                        📥 Archive
+                    </button>
+                    <button @click="deletedUid = '{{ uid }}'; deletedFolder = '{{ folder }}'"
+                            hx-post="/api/email/move/{{ folder }}/{{ uid }}?destination=[Gmail]/Trash"
+                            hx-swap="none"
+                            hx-on::after-request="window.showUndoToast('Email deleted', deletedUid, deletedFolder, '[Gmail]/Trash')"
+                            class="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-gray-800">
+                        🗑️ Delete
+                    </button>
+                    <button hx-post="/api/email/move/{{ folder }}/{{ uid }}?destination=[Gmail]/Spam"
+                            hx-swap="none"
+                            hx-on::after-request="window.location.href='/inbox'"
+                            class="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-gray-800">
+                        ⚠️ Spam
+                    </button>
                 </div>
             </div>
-            
-            <div x-show="expanded" x-collapse x-cloak>
-                <div class="px-4 py-4 email-content prose prose-invert max-w-none text-sm text-gray-300">
-                    {{ message.content | safe }}
+        </div>
+
+        <div class="space-y-4">
+            {% for message in messages %}
+            <div class="bg-gray-900 rounded-lg overflow-hidden" 
+                 x-data="{ expanded: {{ 'true' if loop.last else 'false' }} }">
+                <div class="px-4 py-3 border-b border-gray-800 cursor-pointer hover:bg-gray-800"
+                     @click="expanded = !expanded">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center space-x-3">
+                            <div class="w-10 h-10 rounded-full bg-primary flex items-center justify-center text-white font-medium">
+                                {{ message.from_name[0] if message.from_name else '?' }}
+                            </div>
+                            <div>
+                                <p class="text-sm font-medium text-white">
+                                    {{ message.from_name or message.from_addr }}
+                                </p>
+                                <p class="text-xs text-gray-500">
+                                    to {{ message.to_addr[:50] }}{% if message.to_addr|length > 50 %}...{% endif %}
+                                    {% if message.cc_addr %}
+                                    <span class="ml-1">cc: {{ message.cc_addr[:30] }}{% if message.cc_addr|length > 30 %}...{% endif %}</span>
+                                    {% endif %}
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            {% if message.has_attachments %}
+                            <span class="text-gray-500" title="Has attachments">📎</span>
+                            {% endif %}
+                            <span class="text-sm text-gray-500">{{ message.date }}</span>
+                            <span class="text-gray-500" x-text="expanded ? '▼' : '▶'"></span>
+                        </div>
+                    </div>
                 </div>
                 
-                {% if message.has_attachments and message.attachment_filenames %}
-                <div class="px-4 py-3 bg-gray-800/50 border-t border-gray-800">
-                    <p class="text-xs font-medium text-gray-500 mb-2">Attachments</p>
-                    <div class="flex flex-wrap gap-2">
-                        {% for filename in message.attachment_filenames %}
-                        <span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-gray-800 text-gray-300">
-                            📄 {{ filename }}
-                        </span>
-                        {% endfor %}
+                <div x-show="expanded" x-collapse x-cloak>
+                    <div class="px-4 py-4 email-content prose prose-invert max-w-none text-sm text-gray-300">
+                        {{ message.content | safe }}
                     </div>
+                    
+                    {% if message.has_attachments and message.attachment_filenames %}
+                    <div class="px-4 py-3 bg-gray-800/50 border-t border-gray-800">
+                        <p class="text-xs font-medium text-gray-500 mb-2">Attachments</p>
+                        <div class="flex flex-wrap gap-2">
+                            {% for filename in message.attachment_filenames %}
+                            <span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-gray-800 text-gray-300">
+                                📄 {{ filename }}
+                            </span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
                 </div>
-                {% endif %}
             </div>
+            {% endfor %}
         </div>
-        {% endfor %}
+
+        <div class="flex items-center space-x-3">
+            {% if calendar_invite %}
+            <div class="flex items-center space-x-2 mr-4 px-3 py-2 bg-blue-900/30 border border-blue-800 rounded-lg">
+                <span class="text-sm text-blue-300">📅 Meeting Invite</span>
+                <button hx-post="/api/calendar/respond/{{ calendar_invite.event_id }}?response=accepted"
+                        hx-swap="none"
+                        hx-on::after-request="window.showToast('Accepted!', 'success')"
+                        class="px-3 py-1 text-xs font-medium text-white bg-green-600 hover:bg-green-700 rounded">
+                    ✓ Accept
+                </button>
+                <button hx-post="/api/calendar/respond/{{ calendar_invite.event_id }}?response=tentative"
+                        hx-swap="none"
+                        hx-on::after-request="window.showToast('Tentatively accepted', 'info')"
+                        class="px-3 py-1 text-xs font-medium text-gray-300 bg-gray-700 hover:bg-gray-600 rounded">
+                    ? Maybe
+                </button>
+                <button hx-post="/api/calendar/respond/{{ calendar_invite.event_id }}?response=declined"
+                        hx-swap="none"
+                        hx-on::after-request="window.showToast('Declined', 'info')"
+                        class="px-3 py-1 text-xs font-medium text-white bg-red-600 hover:bg-red-700 rounded">
+                    ✕ Decline
+                </button>
+            </div>
+            {% endif %}
+            <button class="px-4 py-2 text-sm font-medium text-white bg-primary rounded-md hover:bg-primary/90"
+                    hx-get="/compose?reply_to={{ uid }}&folder={{ folder }}"
+                    hx-target="#modal-container"
+                    hx-swap="innerHTML">
+                ↩️ Reply
+            </button>
+            <button class="px-4 py-2 text-sm font-medium text-gray-300 bg-gray-900 border border-gray-700 rounded-md hover:bg-gray-800"
+                    hx-get="/compose?reply_all={{ uid }}&folder={{ folder }}"
+                    hx-target="#modal-container"
+                    hx-swap="innerHTML">
+                ↩️↩️ Reply All
+            </button>
+            <button class="px-4 py-2 text-sm font-medium text-gray-300 bg-gray-900 border border-gray-700 rounded-md hover:bg-gray-800"
+                    hx-get="/compose?forward={{ uid }}&folder={{ folder }}"
+                    hx-target="#modal-container"
+                    hx-swap="innerHTML">
+                ➡️ Forward
+            </button>
+        </div>
     </div>
 
-    <div class="flex items-center space-x-3">
-        {% if calendar_invite %}
-        <div class="flex items-center space-x-2 mr-4 px-3 py-2 bg-blue-900/30 border border-blue-800 rounded-lg">
-            <span class="text-sm text-blue-300">📅 Meeting Invite</span>
-            <button hx-post="/api/calendar/respond/{{ calendar_invite.event_id }}?response=accepted"
-                    hx-swap="none"
-                    hx-on::after-request="window.showToast('Accepted!', 'success')"
-                    class="px-3 py-1 text-xs font-medium text-white bg-green-600 hover:bg-green-700 rounded">
-                ✓ Accept
-            </button>
-            <button hx-post="/api/calendar/respond/{{ calendar_invite.event_id }}?response=tentative"
-                    hx-swap="none"
-                    hx-on::after-request="window.showToast('Tentatively accepted', 'info')"
-                    class="px-3 py-1 text-xs font-medium text-gray-300 bg-gray-700 hover:bg-gray-600 rounded">
-                ? Maybe
-            </button>
-            <button hx-post="/api/calendar/respond/{{ calendar_invite.event_id }}?response=declined"
-                    hx-swap="none"
-                    hx-on::after-request="window.showToast('Declined', 'info')"
-                    class="px-3 py-1 text-xs font-medium text-white bg-red-600 hover:bg-red-700 rounded">
-                ✕ Decline
-            </button>
+    <div x-show="showAnalysis" x-cloak
+         class="w-72 flex-shrink-0"
+         hx-get="/analysis/{{ folder }}/{{ uid }}"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+        <div class="animate-pulse space-y-4">
+            <div class="bg-gray-900 rounded-lg p-4 h-24"></div>
+            <div class="bg-gray-900 rounded-lg p-4 h-32"></div>
+            <div class="bg-gray-900 rounded-lg p-4 h-40"></div>
         </div>
-        {% endif %}
-        <button class="px-4 py-2 text-sm font-medium text-white bg-primary rounded-md hover:bg-primary/90"
-                hx-get="/compose?reply_to={{ uid }}&folder={{ folder }}"
-                hx-target="#modal-container"
-                hx-swap="innerHTML">
-            ↩️ Reply
-        </button>
-        <button class="px-4 py-2 text-sm font-medium text-gray-300 bg-gray-900 border border-gray-700 rounded-md hover:bg-gray-800"
-                hx-get="/compose?reply_all={{ uid }}&folder={{ folder }}"
-                hx-target="#modal-container"
-                hx-swap="innerHTML">
-            ↩️↩️ Reply All
-        </button>
-        <button class="px-4 py-2 text-sm font-medium text-gray-300 bg-gray-900 border border-gray-700 rounded-md hover:bg-gray-800"
-                hx-get="/compose?forward={{ uid }}&folder={{ folder }}"
-                hx-target="#modal-container"
-                hx-swap="innerHTML">
-            ➡️ Forward
-        </button>
     </div>
 </div>
 

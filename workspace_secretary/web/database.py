@@ -150,3 +150,31 @@ def has_embeddings() -> bool:
                 return cur.fetchone() is not None
     except Exception:
         return False
+
+
+def find_related_emails(uid: int, folder: str, limit: int = 5) -> list[dict]:
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT embedding FROM email_embeddings WHERE uid = %s AND folder = %s",
+                (uid, folder),
+            )
+            row = cur.fetchone()
+            if not row:
+                return []
+
+            embedding = row["embedding"]
+            cur.execute(
+                """
+                SELECT e.uid, e.folder, e.from_addr, e.subject, 
+                       LEFT(e.body_text, 150) as preview, e.date,
+                       1 - (emb.embedding <=> %s::vector) as similarity
+                FROM email_embeddings emb
+                JOIN emails e ON e.uid = emb.uid AND e.folder = emb.folder
+                WHERE NOT (e.uid = %s AND e.folder = %s)
+                  AND 1 - (emb.embedding <=> %s::vector) > 0.6
+                ORDER BY similarity DESC LIMIT %s
+            """,
+                (embedding, uid, folder, embedding, limit),
+            )
+            return cur.fetchall()

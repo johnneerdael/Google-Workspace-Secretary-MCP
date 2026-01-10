@@ -24,6 +24,7 @@ def main():
         actions,
         compose,
         calendar,
+        analysis,
     )
 
     web_app.include_router(inbox.router)
@@ -32,6 +33,7 @@ def main():
     web_app.include_router(actions.router)
     web_app.include_router(compose.router)
     web_app.include_router(calendar.router)
+    web_app.include_router(analysis.router)
 
     host = os.environ.get("WEB_HOST", "0.0.0.0")
     port = int(os.environ.get("WEB_PORT", "8080"))
