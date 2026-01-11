@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en" x-data="{ 
+    darkMode: localStorage.getItem('darkMode') === 'true',
+    density: localStorage.getItem('density') || 'comfortable',
+    editMode: {
+        identity: false,
+        vips: false,
+        hours: false,
+        ai: false
+    }
+}" :class="{ 'dark': darkMode, 'light': !darkMode }">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings | Secretary</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link rel="stylesheet" href="theme_1.css">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        primary: 'oklch(65% 0.2 260)',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        [x-cloak] { display: none !important; }
+        body { 
+            background-color: var(--bg-main); 
+            color: var(--text-primary);
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        }
+    </style>
+</head>
+<body class="min-h-screen p-4 md:p-8 animate-fade-in">
+    <div class="max-w-4xl mx-auto">
+        <header class="flex items-center justify-between mb-8">
+            <div class="flex items-center gap-4">
+                <a href="/" class="p-2 rounded-full hover:bg-white/10 transition-colors">
+                    <i data-lucide="arrow-left" class="w-6 h-6"></i>
+                </a>
+                <h1 class="text-3xl font-bold">Settings</h1>
+            </div>
+            <div class="flex items-center gap-4 p-1 bg-zinc-800/50 rounded-lg">
+                <button @click="darkMode = false; localStorage.setItem('darkMode', 'false')" 
+                        :class="!darkMode ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-400 hover:text-white'"
+                        class="px-3 py-1.5 rounded-md text-sm font-medium transition-all">
+                    Light
+                </button>
+                <button @click="darkMode = true; localStorage.setItem('darkMode', 'true')" 
+                        :class="darkMode ? 'bg-zinc-700 text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'"
+                        class="px-3 py-1.5 rounded-md text-sm font-medium transition-all">
+                    Dark
+                </button>
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <section class="card-settings animate-slide-up hover-lift" style="animation-delay: 0.1s">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-lg font-semibold flex items-center gap-2">
+                        <i data-lucide="user" class="w-5 h-5 text-blue-400"></i>
+                        Identity
+                    </h2>
+                    <button @click="editMode.identity = !editMode.identity" class="text-sm text-blue-400 hover:underline">
+                        <span x-text="editMode.identity ? 'Cancel' : 'Edit'"></span>
+                    </button>
+                </div>
+                
+                <div x-show="!editMode.identity" class="space-y-3">
+                    <div>
+                        <p class="text-sm text-muted">Full Name</p>
+                        <p class="font-medium">Jane Doe</p>
+                    </div>
+                    <div>
+                        <p class="text-sm text-muted">Primary Email</p>
+                        <p class="font-medium">jane@example.com</p>
+                    </div>
+                </div>
+
+                <form x-show="editMode.identity" x-cloak class="space-y-4">
+                    <div>
+                        <label class="block text-sm text-muted mb-1">Full Name</label>
+                        <input type="text" class="input-field" value="Jane Doe">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-muted mb-1">Primary Email</label>
+                        <input type="email" class="input-field" value="jane@example.com">
+                    </div>
+                    <button type="button" @click="editMode.identity = false" class="btn-primary w-full">Save Changes</button>
+                </form>
+            </section>
+
+            <section class="card-settings animate-slide-up hover-lift" style="animation-delay: 0.2s">
+                <h2 class="text-lg font-semibold flex items-center gap-2 mb-6">
+                    <i data-lucide="palette" class="w-5 h-5 text-purple-400"></i>
+                    Appearance
+                </h2>
+                
+                <div class="space-y-6">
+                    <div>
+                        <p class="text-sm text-muted mb-3">Display Density</p>
+                        <div class="grid grid-cols-3 gap-2 p-1 bg-zinc-800/50 rounded-lg">
+                            <button @click="density = 'compact'; localStorage.setItem('density', 'compact')"
+                                    :class="density === 'compact' ? 'bg-zinc-700 text-white shadow-sm' : 'text-zinc-400 hover:text-white'"
+                                    class="py-2 text-xs font-medium rounded-md transition-all">Compact</button>
+                            <button @click="density = 'comfortable'; localStorage.setItem('density', 'comfortable')"
+                                    :class="density === 'comfortable' ? 'bg-zinc-700 text-white shadow-sm' : 'text-zinc-400 hover:text-white'"
+                                    class="py-2 text-xs font-medium rounded-md transition-all">Default</button>
+                            <button @click="density = 'airy'; localStorage.setItem('density', 'airy')"
+                                    :class="density === 'airy' ? 'bg-zinc-700 text-white shadow-sm' : 'text-zinc-400 hover:text-white'"
+                                    class="py-2 text-xs font-medium rounded-md transition-all">Airy</button>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="font-medium">Reduced Motion</p>
+                            <p class="text-xs text-muted">Minimize animation intensity</p>
+                        </div>
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" class="sr-only peer">
+                            <div class="w-11 h-6 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                        </label>
+                    </div>
+                </div>
+            </section>
+
+            <section class="card-settings animate-slide-up hover-lift" style="animation-delay: 0.3s">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-lg font-semibold flex items-center gap-2">
+                        <i data-lucide="star" class="w-5 h-5 text-yellow-400"></i>
+                        VIP Senders
+                    </h2>
+                    <button class="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 transition-colors">
+                        <i data-lucide="plus" class="w-4 h-4 text-white"></i>
+                    </button>
+                </div>
+                
+                <ul class="space-y-2 max-h-40 overflow-y-auto pr-2 custom-scrollbar">
+                    <li class="flex items-center justify-between p-2 rounded-lg bg-zinc-800/30 group">
+                        <span class="text-sm">ceo@company.com</span>
+                        <button class="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:text-red-400">
+                            <i data-lucide="trash-2" class="w-4 h-4"></i>
+                        </button>
+                    </li>
+                    <li class="flex items-center justify-between p-2 rounded-lg bg-zinc-800/30 group">
+                        <span class="text-sm">investor@vcfirm.com</span>
+                        <button class="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:text-red-400">
+                            <i data-lucide="trash-2" class="w-4 h-4"></i>
+                        </button>
+                    </li>
+                    <li class="flex items-center justify-between p-2 rounded-lg bg-zinc-800/30 group">
+                        <span class="text-sm">partner@legal.com</span>
+                        <button class="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:text-red-400">
+                            <i data-lucide="trash-2" class="w-4 h-4"></i>
+                        </button>
+                    </li>
+                </ul>
+            </section>
+
+            <section class="card-settings animate-slide-up hover-lift" style="animation-delay: 0.4s">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-lg font-semibold flex items-center gap-2">
+                        <i data-lucide="clock" class="w-5 h-5 text-green-400"></i>
+                        Working Hours
+                    </h2>
+                    <button @click="editMode.hours = !editMode.hours" class="text-sm text-blue-400 hover:underline">
+                        <span x-text="editMode.hours ? 'Cancel' : 'Edit'"></span>
+                    </button>
+                </div>
+                
+                <div x-show="!editMode.hours" class="space-y-2">
+                    <div class="flex justify-between text-sm">
+                        <span class="text-muted">Schedule</span>
+                        <span class="font-medium">Mon - Fri</span>
+                    </div>
+                    <div class="flex justify-between text-sm">
+                        <span class="text-muted">Hours</span>
+                        <span class="font-medium">09:00 - 18:00</span>
+                    </div>
+                    <div class="flex justify-between text-sm">
+                        <span class="text-muted">Timezone</span>
+                        <span class="font-medium">Europe/Paris (GMT+1)</span>
+                    </div>
+                </div>
+
+                <form x-show="editMode.hours" x-cloak class="space-y-4">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm text-muted mb-1">From</label>
+                            <input type="time" class="input-field" value="09:00">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-muted mb-1">To</label>
+                            <input type="time" class="input-field" value="18:00">
+                        </div>
+                    </div>
+                    <button type="button" @click="editMode.hours = false" class="btn-primary w-full">Update Schedule</button>
+                </form>
+            </section>
+
+            <section class="card-settings animate-slide-up hover-lift" style="animation-delay: 0.5s">
+                <h2 class="text-lg font-semibold flex items-center gap-2 mb-4">
+                    <i data-lucide="bell" class="w-5 h-5 text-orange-400"></i>
+                    Notifications
+                </h2>
+                <div class="space-y-4">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="font-medium text-sm">Desktop Alerts</p>
+                            <p class="text-xs text-muted">Show notifications for VIP emails</p>
+                        </div>
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" checked class="sr-only peer">
+                            <div class="w-10 h-5 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                        </label>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="font-medium text-sm">Sound Effects</p>
+                            <p class="text-xs text-muted">Play a sound on new messages</p>
+                        </div>
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" class="sr-only peer">
+                            <div class="w-10 h-5 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                        </label>
+                    </div>
+                </div>
+            </section>
+
+            <section class="card-settings animate-slide-up hover-lift" style="animation-delay: 0.6s">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-lg font-semibold flex items-center gap-2">
+                        <i data-lucide="cpu" class="w-5 h-5 text-cyan-400"></i>
+                        AI Assistant
+                    </h2>
+                    <button @click="editMode.ai = !editMode.ai" class="text-sm text-blue-400 hover:underline">
+                        <span x-text="editMode.ai ? 'Cancel' : 'Edit'"></span>
+                    </button>
+                </div>
+                
+                <div x-show="!editMode.ai" class="space-y-2">
+                    <div class="flex justify-between text-sm">
+                        <span class="text-muted">Model</span>
+                        <span class="font-medium">GPT-4 Turbo</span>
+                    </div>
+                    <div class="flex justify-between text-sm">
+                        <span class="text-muted">Auto-drafting</span>
+                        <span class="font-medium text-green-400">Enabled</span>
+                    </div>
+                </div>
+
+                <form x-show="editMode.ai" x-cloak class="space-y-4">
+                    <div>
+                        <label class="block text-sm text-muted mb-1">Model Selection</label>
+                        <select class="input-field appearance-none">
+                            <option>GPT-4 Turbo</option>
+                            <option>GPT-3.5 Ultra</option>
+                            <option>Claude 3 Opus</option>
+                        </select>
+                    </div>
+                    <button type="button" @click="editMode.ai = false" class="btn-primary w-full">Apply AI Config</button>
+                </form>
+            </section>
+
+            <section class="card-settings animate-slide-up hover-lift md:col-span-2" style="animation-delay: 0.7s">
+                <div class="flex items-center justify-between mb-6">
+                    <h2 class="text-lg font-semibold flex items-center gap-2">
+                        <i data-lucide="keyboard" class="w-5 h-5 text-zinc-400"></i>
+                        Keyboard Shortcuts
+                    </h2>
+                    <label class="relative inline-flex items-center cursor-pointer">
+                        <span class="mr-3 text-sm text-muted">Enable Shortcuts</span>
+                        <input type="checkbox" checked class="sr-only peer">
+                        <div class="w-11 h-6 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                    </label>
+                </div>
+                
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div class="p-3 rounded-lg bg-zinc-800/50 flex flex-col items-center">
+                        <kbd class="px-2 py-1 bg-zinc-700 rounded text-xs mb-2">G then I</kbd>
+                        <span class="text-xs text-muted">Go to Inbox</span>
+                    </div>
+                    <div class="p-3 rounded-lg bg-zinc-800/50 flex flex-col items-center">
+                        <kbd class="px-2 py-1 bg-zinc-700 rounded text-xs mb-2">/</kbd>
+                        <span class="text-xs text-muted">Search</span>
+                    </div>
+                    <div class="p-3 rounded-lg bg-zinc-800/50 flex flex-col items-center">
+                        <kbd class="px-2 py-1 bg-zinc-700 rounded text-xs mb-2">C</kbd>
+                        <span class="text-xs text-muted">Compose</span>
+                    </div>
+                    <div class="p-3 rounded-lg bg-zinc-800/50 flex flex-col items-center">
+                        <kbd class="px-2 py-1 bg-zinc-700 rounded text-xs mb-2">?</kbd>
+                        <span class="text-xs text-muted">Help Map</span>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <footer class="mt-12 pt-8 border-t border-zinc-800 text-center">
+            <div class="inline-flex items-center gap-3 px-4 py-2 bg-blue-500/10 rounded-full text-blue-400 text-sm">
+                <i data-lucide="info" class="w-4 h-4"></i>
+                <span>Some changes require a server restart to take effect.</span>
+                <button class="ml-2 px-3 py-1 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors">
+                    Restart Now
+                </button>
+            </div>
+            <p class="mt-4 text-xs text-muted">Version 0.4.2-beta | Connected via IMAP/SMTP</p>
+        </footer>
+    </div>
+
+    <script>
+        lucide.createIcons();
+    </script>
+</body>
+</html>

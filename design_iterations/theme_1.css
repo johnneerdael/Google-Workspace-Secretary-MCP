@@ -1,0 +1,70 @@
+@layer base {
+  :root {
+    --color-primary: 65% 0.2 260;
+    --color-secondary: 70% 0.1 150;
+    --color-accent: 75% 0.15 40;
+    
+    --bg-main: oklch(18% 0.01 260);
+    --bg-surface: oklch(22% 0.02 260);
+    --bg-card: oklch(26% 0.02 260);
+    
+    --text-primary: oklch(98% 0.01 260);
+    --text-secondary: oklch(85% 0.02 260);
+    --text-muted: oklch(65% 0.02 260);
+    
+    --border-subtle: oklch(35% 0.02 260 / 0.3);
+  }
+
+  .light {
+    --bg-main: oklch(98% 0.01 260);
+    --bg-surface: oklch(94% 0.01 260);
+    --bg-card: oklch(100% 0% 0);
+    --text-primary: oklch(20% 0.02 260);
+    --text-secondary: oklch(40% 0.02 260);
+    --text-muted: oklch(60% 0.02 260);
+    --border-subtle: oklch(90% 0.02 260);
+  }
+}
+
+@layer components {
+  .btn-primary {
+    background-color: oklch(var(--color-primary));
+    color: white;
+    @apply px-4 py-2 rounded-lg font-medium transition-all duration-200 hover:brightness-110 active:scale-95 shadow-lg shadow-blue-500/20;
+  }
+  
+  .card-settings {
+    background-color: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    @apply p-6 rounded-xl shadow-sm hover:shadow-md transition-shadow duration-300;
+  }
+  
+  .input-field {
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+    @apply w-full px-4 py-2 rounded-lg focus:ring-2 focus:ring-blue-500/50 outline-none transition-all;
+  }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-slide-up {
+  animation: slideUp 0.4s ease-out forwards;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-in forwards;
+}
+
+.hover-lift {
+  @apply transition-transform duration-300 hover:-translate-y-1;
+}
