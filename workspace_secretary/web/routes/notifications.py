@@ -4,11 +4,34 @@ from fastapi.templating import Jinja2Templates
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
+import json
 
 from workspace_secretary.web import database as db, engine_client as engine
 from workspace_secretary.web.auth import require_auth, Session
 
 router = APIRouter()
+
+
+@router.get("/api/sync/status")
+async def sync_status(session: Session = Depends(require_auth)):
+    """Get current sync status from the engine."""
+    try:
+        status = await engine.get_status()
+
+        return {
+            "status": "ok",
+            "connected": status.get("imap_connected", False),
+            "running": status.get("status") == "running",
+            "enrolled": status.get("enrolled", False),
+            "last_sync": datetime.now().isoformat(),
+            "folders": await engine.get_folders() if status.get("enrolled") else {},
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500, content={"status": "error", "message": str(e)}
+        )
+
+
 templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
 
 # Track last check time per session (in production, use Redis or DB)

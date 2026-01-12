@@ -393,10 +393,11 @@ def get_search_suggestions(query: str, limit: int = 5) -> list[dict]:
             # Suggest subjects
             cur.execute(
                 """
-                SELECT DISTINCT subject
+                SELECT subject
                 FROM emails
                 WHERE subject ILIKE %s
-                ORDER BY date DESC LIMIT %s
+                GROUP BY subject
+                ORDER BY MAX(date) DESC LIMIT %s
                 """,
                 (f"%{query}%", limit),
             )

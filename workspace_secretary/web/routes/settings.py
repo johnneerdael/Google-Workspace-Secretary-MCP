@@ -34,6 +34,10 @@ class UISettingsRequest(BaseModel):
     density: str
 
 
+class CalendarSettingsRequest(BaseModel):
+    selected_calendar_ids: list[str]
+
+
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request, session: Session = Depends(require_auth)):
     web_config = get_web_config()
@@ -156,6 +160,46 @@ async def auth_partial(request: Request, session: Session = Depends(require_auth
     )
 
 
+@router.get("/settings/calendar", response_class=HTMLResponse)
+async def calendar_partial(request: Request, session: Session = Depends(require_auth)):
+    from workspace_secretary.web import engine_client as engine
+    from workspace_secretary.web.database import get_pool
+
+    calendars = []
+    selected_ids = ["primary"]
+
+    try:
+        result = await engine.list_calendars()
+        if result.get("status") == "ok":
+            calendars = result.get("calendars", [])
+    except Exception as e:
+        logger.error(f"Failed to load calendars: {e}")
+
+    try:
+        pool = get_pool()
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT prefs_json FROM user_preferences WHERE user_id = %s",
+                    (session.user_id,),
+                )
+                row = cur.fetchone()
+                if row and row[0]:
+                    prefs = row[0]
+                    if isinstance(prefs, str):
+                        prefs = json.loads(prefs)
+                    selected_ids = prefs.get("calendar", {}).get(
+                        "selected_calendar_ids", ["primary"]
+                    )
+    except Exception as e:
+        logger.error(f"Failed to load calendar preferences: {e}")
+
+    return templates.TemplateResponse(
+        "partials/settings_calendar.html",
+        {"request": request, "calendars": calendars, "selected_ids": selected_ids},
+    )
+
+
 @router.post("/api/settings/identity")
 async def update_identity_settings(
     payload: IdentitySettingsRequest,
@@ -246,6 +290,47 @@ async def update_ui_settings(
                 DO UPDATE SET prefs_json = EXCLUDED.prefs_json, updated_at = NOW()
                 """,
                 (session.user_id, json.dumps(prefs_json)),
+            )
+        conn.commit()
+
+    return {"status": "ok"}
+
+
+@router.put("/api/settings/calendar")
+async def update_calendar_settings(
+    payload: CalendarSettingsRequest,
+    session: Session = Depends(require_auth),
+):
+    from workspace_secretary.web.database import get_pool
+
+    pool = get_pool()
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT prefs_json FROM user_preferences WHERE user_id = %s",
+                (session.user_id,),
+            )
+            row = cur.fetchone()
+
+            prefs = {}
+            if row and row[0]:
+                prefs = row[0]
+                if isinstance(prefs, str):
+                    prefs = json.loads(prefs)
+
+            if "calendar" not in prefs:
+                prefs["calendar"] = {}
+
+            prefs["calendar"]["selected_calendar_ids"] = payload.selected_calendar_ids
+
+            cur.execute(
+                """
+                INSERT INTO user_preferences (user_id, prefs_json, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (user_id)
+                DO UPDATE SET prefs_json = EXCLUDED.prefs_json, updated_at = NOW()
+                """,
+                (session.user_id, json.dumps(prefs)),
             )
         conn.commit()
 

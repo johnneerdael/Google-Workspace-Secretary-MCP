@@ -1,6 +1,6 @@
 # Gmail Secretary
 
-[![Version](https://img.shields.io/badge/version-0.9.0--rc1-orange.svg)](https://github.com/johnneerdael/gmail-secretary-map/releases)
+[![Version](https://img.shields.io/badge/version-4.6.0-blue.svg)](https://github.com/johnneerdael/gmail-secretary-map/releases)
 [![Status](https://img.shields.io/badge/status-Public%20Alpha-orange)](https://github.com/johnneerdael/gmail-secretary-map)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -147,6 +147,15 @@ Dual-process design separating sync from AI interface:
 ---
 
 ## 🎯 AI-Native Features
+
+**Calendar Integration:**
+- ⚡ **Instant Calendar Access**: Sub-50ms queries via intelligent caching layer
+- 🌐 **Offline-First Operations**: Create/edit/delete events without internet, sync transparently
+- 🔄 **Background Sync Worker**: Autonomous daemon syncs every 60s using Google Calendar API sync tokens
+- 🏷️ **Status Indicators**: Visual badges show pending/synced/conflict states for offline operations
+- ⚙️ **Multi-Calendar Support**: Select which calendars to display via web UI settings
+
+**Email Intelligence:**
 
 ### Intelligent Signal Extraction
 

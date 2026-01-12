@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request, Depends
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -290,3 +290,29 @@ async def admin_dashboard(
             "integrity_stats": integrity_stats,
         },
     )
+
+
+@router.get("/api/activity/log")
+async def activity_log(session: Session = Depends(require_auth)):
+    """Get recent activity log from mutation journal."""
+    with db.get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, email_uid, email_folder, action, status, error, created_at, completed_at
+                FROM mutation_journal
+                ORDER BY created_at DESC
+                LIMIT 50
+                """
+            )
+            columns = [desc[0] for desc in (cur.description or [])]
+            log_entries = [dict(zip(columns, row)) for row in cur.fetchall()]
+
+            # Convert datetimes to isoformat
+            for entry in log_entries:
+                if entry.get("created_at"):
+                    entry["created_at"] = entry["created_at"].isoformat()
+                if entry.get("completed_at"):
+                    entry["completed_at"] = entry["completed_at"].isoformat()
+
+            return JSONResponse({"status": "ok", "log": log_entries})

@@ -18,7 +18,7 @@ export default defineConfig({
       { text: 'Embeddings', link: '/embeddings/' },
       { text: 'MCP Tools', link: '/tools/' },
       {
-        text: 'v4.4.0',
+        text: 'v4.6.0',
         items: [
           { text: 'Changelog', link: 'https://github.com/johnneerdael/gmail-secretary-mcp/releases' },
           { text: 'Contributing', link: 'https://github.com/johnneerdael/gmail-workspace-mcp' }
@@ -28,52 +28,23 @@ export default defineConfig({
 
     sidebar: {
       '/guide/': [
-        {
-          text: 'Guide',
-          items: [
-            { text: 'Introduction', link: '/guide/' },
-            { text: 'Configuration', link: '/guide/configuration' },
-            { text: 'Security', link: '/guide/security' },
-            { text: 'OAuth Workaround', link: '/guide/oauth_workaround' },
-            { text: 'Docker Deployment', link: '/guide/docker' },
-            { text: 'Web UI', link: '/guide/web-ui' },
-            { text: 'Semantic Search', link: '/guide/semantic-search' },
-            { text: 'Threading', link: '/guide/threading' },
-            { text: 'Agent Patterns', link: '/guide/agents' },
-            { text: 'Use Cases', link: '/guide/use-cases' },
-            { text: 'OpenCode Integration', link: '/guide/opencode' },
-            { text: 'Mutation Journal', link: '/guide/mutation-journal' }
-          ]
-        }
-      ],
-      '/webserver/': [
-        {
-          text: 'Web Server',
-          items: [
-            { text: 'Overview', link: '/webserver/' }
-          ]
-        }
-      ],
-      '/embeddings/': [
-        {
-          text: 'Embeddings',
-          items: [
-            { text: 'Overview', link: '/embeddings/' }
-          ]
-        }
-      ],
-      '/tools/': [
-        {
-          text: 'MCP Tools Reference',
-          items: [
-            { text: 'Overview', link: '/tools/' },
-            { text: 'Email Tools', link: '/tools/email' },
-            { text: 'Calendar Tools', link: '/tools/calendar' },
-            { text: 'Intelligence Tools', link: '/tools/intelligence' }
-          ]
-        }
-      ]
-    },
+          {
+            text: 'Guide',
+            items: [
+              { text: 'Getting Started', link: '/guide/getting-started' },
+              { text: 'Configuration', link: '/guide/configuration' },
+              { text: 'Calendar Integration', link: '/guide/calendar' },
+              { text: 'Security', link: '/guide/security' },
+              { text: 'Docker Deployment', link: '/guide/docker' },
+              { text: 'Web UI', link: '/guide/web-ui' },
+              { text: 'Semantic Search', link: '/guide/semantic-search' },
+              { text: 'Email Threading', link: '/guide/threading' },
+              { text: 'Agent System', link: '/guide/agents' },
+              { text: 'Use Cases', link: '/guide/use-cases' },
+              { text: 'OpenCode Integration', link: '/guide/opencode' },
+              { text: 'Mutation Journal', link: '/guide/mutation-journal' }
+            ]
+          },
 
     socialLinks: [
       { icon: 'github', link: 'https://github.com/johnneerdael/gmail-secretary-mcp' }

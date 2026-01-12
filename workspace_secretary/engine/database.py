@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import uuid
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from datetime import datetime
@@ -23,6 +24,10 @@ class DatabaseConnection(Protocol):
 
 class DatabaseInterface(ABC):
     @abstractmethod
+    def supports_embeddings(self) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
     def initialize(self) -> None:
         raise NotImplementedError
 
@@ -35,15 +40,109 @@ class DatabaseInterface(ABC):
     def close(self) -> None:
         raise NotImplementedError
 
-    def supports_embeddings(self) -> bool:
-        return False
+    @abstractmethod
+    def get_user_preferences(self, user_id: str) -> dict[str, Any]:
+        raise NotImplementedError
 
+    @abstractmethod
+    def upsert_user_preferences(self, user_id: str, prefs: dict[str, Any]) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def ensure_calendar_schema(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def upsert_calendar_sync_state(
+        self,
+        calendar_id: str,
+        window_start: str,
+        window_end: str,
+        sync_token: Optional[str],
+        status: str = "ok",
+        last_error: Optional[str] = None,
+        last_full_sync_at: Optional[str] = None,
+        last_incremental_sync_at: Optional[str] = None,
+    ) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_calendar_sync_state(self, calendar_id: str) -> Optional[dict[str, Any]]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_calendar_sync_states(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def upsert_calendar_event_cache(
+        self,
+        calendar_id: str,
+        event_id: str,
+        raw_json: dict[str, Any],
+        etag: Optional[str] = None,
+        updated: Optional[str] = None,
+        status: Optional[str] = None,
+        start_ts_utc: Optional[str] = None,
+        end_ts_utc: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        is_all_day: bool = False,
+        summary: Optional[str] = None,
+        location: Optional[str] = None,
+        local_status: str = "synced",
+    ) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def delete_calendar_event_cache(self, calendar_id: str, event_id: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def query_calendar_events_cached(
+        self,
+        calendar_ids: list[str],
+        time_min: str,
+        time_max: str,
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def enqueue_calendar_outbox(
+        self,
+        op_type: str,
+        calendar_id: str,
+        payload_json: dict[str, Any],
+        event_id: Optional[str] = None,
+        local_temp_id: Optional[str] = None,
+    ) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_calendar_outbox(
+        self, statuses: Optional[list[str]] = None
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_calendar_outbox_status(
+        self,
+        outbox_id: str,
+        status: str,
+        error: Optional[str] = None,
+        event_id: Optional[str] = None,
+    ) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
     def get_synced_uids(self, folder: str) -> list[int]:
         raise NotImplementedError
 
+    @abstractmethod
     def count_emails(self, folder: str) -> int:
         raise NotImplementedError
 
+    @abstractmethod
     def upsert_embedding(
         self,
         uid: int,
@@ -121,6 +220,8 @@ class DatabaseInterface(ABC):
         dmarc: Optional[str] = None,
         is_suspicious_sender: bool = False,
         suspicious_sender_signals: Optional[dict[str, Any]] = None,
+        security_score: int = 100,
+        warning_type: Optional[str] = None,
     ) -> None:
         raise NotImplementedError
 
@@ -216,6 +317,330 @@ class SqliteDatabase(DatabaseInterface):
         self.db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
+    def get_user_preferences(self, user_id: str) -> dict[str, Any]:
+        with self._get_email_connection() as conn:
+            cursor = conn.execute(
+                "SELECT prefs_json FROM user_preferences WHERE user_id = ?",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return {}
+            try:
+                return json.loads(row[0]) if row[0] else {}
+            except Exception:
+                return {}
+
+    def upsert_user_preferences(self, user_id: str, prefs: dict[str, Any]) -> None:
+        with self._get_email_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_preferences (user_id, prefs_json, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    prefs_json = excluded.prefs_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, json.dumps(prefs)),
+            )
+            conn.commit()
+
+    def ensure_calendar_schema(self) -> None:
+        with self._get_email_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS calendar_sync_state (
+                    calendar_id TEXT PRIMARY KEY,
+                    sync_token TEXT,
+                    window_start TEXT NOT NULL,
+                    window_end TEXT NOT NULL,
+                    last_full_sync_at TEXT,
+                    last_incremental_sync_at TEXT,
+                    status TEXT NOT NULL DEFAULT 'ok',
+                    last_error TEXT
+                )
+                """
+            )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS calendar_events_cache (
+                    calendar_id TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    etag TEXT,
+                    updated TEXT,
+                    status TEXT,
+                    start_ts_utc TEXT,
+                    end_ts_utc TEXT,
+                    start_date TEXT,
+                    end_date TEXT,
+                    is_all_day INTEGER NOT NULL DEFAULT 0,
+                    summary TEXT,
+                    location TEXT,
+                    local_status TEXT NOT NULL DEFAULT 'synced',
+                    raw_json TEXT NOT NULL,
+                    PRIMARY KEY (calendar_id, event_id)
+                )
+                """
+            )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS calendar_outbox (
+                    id TEXT PRIMARY KEY,
+                    op_type TEXT NOT NULL,
+                    calendar_id TEXT NOT NULL,
+                    event_id TEXT,
+                    local_temp_id TEXT,
+                    payload_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_attempt_at TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_cal_events_start_ts ON calendar_events_cache(calendar_id, start_ts_utc)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_cal_events_start_date ON calendar_events_cache(calendar_id, start_date)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_cal_outbox_status ON calendar_outbox(status, created_at)"
+            )
+            conn.commit()
+
+    def upsert_calendar_sync_state(
+        self,
+        calendar_id: str,
+        window_start: str,
+        window_end: str,
+        sync_token: Optional[str],
+        status: str = "ok",
+        last_error: Optional[str] = None,
+        last_full_sync_at: Optional[str] = None,
+        last_incremental_sync_at: Optional[str] = None,
+    ) -> None:
+        with self._get_email_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO calendar_sync_state (
+                    calendar_id, sync_token, window_start, window_end,
+                    last_full_sync_at, last_incremental_sync_at, status, last_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(calendar_id) DO UPDATE SET
+                    sync_token = excluded.sync_token,
+                    window_start = excluded.window_start,
+                    window_end = excluded.window_end,
+                    last_full_sync_at = COALESCE(excluded.last_full_sync_at, calendar_sync_state.last_full_sync_at),
+                    last_incremental_sync_at = COALESCE(excluded.last_incremental_sync_at, calendar_sync_state.last_incremental_sync_at),
+                    status = excluded.status,
+                    last_error = excluded.last_error
+                """,
+                (
+                    calendar_id,
+                    sync_token,
+                    window_start,
+                    window_end,
+                    last_full_sync_at,
+                    last_incremental_sync_at,
+                    status,
+                    last_error,
+                ),
+            )
+            conn.commit()
+
+    def get_calendar_sync_state(self, calendar_id: str) -> Optional[dict[str, Any]]:
+        with self._get_email_connection() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM calendar_sync_state WHERE calendar_id = ?",
+                (calendar_id,),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def list_calendar_sync_states(self) -> list[dict[str, Any]]:
+        with self._get_email_connection() as conn:
+            cursor = conn.execute("SELECT * FROM calendar_sync_state")
+            return [dict(row) for row in cursor.fetchall()]
+
+    def upsert_calendar_event_cache(
+        self,
+        calendar_id: str,
+        event_id: str,
+        raw_json: dict[str, Any],
+        etag: Optional[str] = None,
+        updated: Optional[str] = None,
+        status: Optional[str] = None,
+        start_ts_utc: Optional[str] = None,
+        end_ts_utc: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        is_all_day: bool = False,
+        summary: Optional[str] = None,
+        location: Optional[str] = None,
+        local_status: str = "synced",
+    ) -> None:
+        with self._get_email_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO calendar_events_cache (
+                    calendar_id, event_id, etag, updated, status,
+                    start_ts_utc, end_ts_utc, start_date, end_date, is_all_day,
+                    summary, location, local_status, raw_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(calendar_id, event_id) DO UPDATE SET
+                    etag = excluded.etag,
+                    updated = excluded.updated,
+                    status = excluded.status,
+                    start_ts_utc = excluded.start_ts_utc,
+                    end_ts_utc = excluded.end_ts_utc,
+                    start_date = excluded.start_date,
+                    end_date = excluded.end_date,
+                    is_all_day = excluded.is_all_day,
+                    summary = excluded.summary,
+                    location = excluded.location,
+                    local_status = excluded.local_status,
+                    raw_json = excluded.raw_json
+                """,
+                (
+                    calendar_id,
+                    event_id,
+                    etag,
+                    updated,
+                    status,
+                    start_ts_utc,
+                    end_ts_utc,
+                    start_date,
+                    end_date,
+                    1 if is_all_day else 0,
+                    summary,
+                    location,
+                    local_status,
+                    json.dumps(raw_json),
+                ),
+            )
+            conn.commit()
+
+    def delete_calendar_event_cache(self, calendar_id: str, event_id: str) -> None:
+        with self._get_email_connection() as conn:
+            conn.execute(
+                "DELETE FROM calendar_events_cache WHERE calendar_id = ? AND event_id = ?",
+                (calendar_id, event_id),
+            )
+            conn.commit()
+
+    def query_calendar_events_cached(
+        self,
+        calendar_ids: list[str],
+        time_min: str,
+        time_max: str,
+    ) -> list[dict[str, Any]]:
+        if not calendar_ids:
+            return []
+
+        placeholders = ",".join(["?"] * len(calendar_ids))
+        query = f"""
+            SELECT raw_json, local_status
+            FROM calendar_events_cache
+            WHERE calendar_id IN ({placeholders})
+              AND (
+                (is_all_day = 0 AND start_ts_utc < ? AND end_ts_utc > ?)
+                OR
+                (is_all_day = 1 AND start_date < substr(?, 1, 10) AND end_date > substr(?, 1, 10))
+              )
+            ORDER BY COALESCE(start_ts_utc, start_date) ASC
+        """
+
+        with self._get_email_connection() as conn:
+            cursor = conn.execute(
+                query,
+                [*calendar_ids, time_max, time_min, time_max, time_min],
+            )
+            results: list[dict[str, Any]] = []
+            for row in cursor.fetchall():
+                try:
+                    evt = json.loads(row[0])
+                except Exception:
+                    continue
+                evt["_local_status"] = row[1]
+                results.append(evt)
+            return results
+
+    def enqueue_calendar_outbox(
+        self,
+        op_type: str,
+        calendar_id: str,
+        payload_json: dict[str, Any],
+        event_id: Optional[str] = None,
+        local_temp_id: Optional[str] = None,
+    ) -> str:
+        outbox_id = str(uuid.uuid4())
+        with self._get_email_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO calendar_outbox (id, op_type, calendar_id, event_id, local_temp_id, payload_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    outbox_id,
+                    op_type,
+                    calendar_id,
+                    event_id,
+                    local_temp_id,
+                    json.dumps(payload_json),
+                ),
+            )
+            conn.commit()
+        return outbox_id
+
+    def list_calendar_outbox(
+        self, statuses: Optional[list[str]] = None
+    ) -> list[dict[str, Any]]:
+        with self._get_email_connection() as conn:
+            if statuses:
+                placeholders = ",".join(["?"] * len(statuses))
+                cursor = conn.execute(
+                    f"SELECT * FROM calendar_outbox WHERE status IN ({placeholders}) ORDER BY created_at",
+                    statuses,
+                )
+            else:
+                cursor = conn.execute(
+                    "SELECT * FROM calendar_outbox ORDER BY created_at"
+                )
+            rows = [dict(r) for r in cursor.fetchall()]
+            for r in rows:
+                try:
+                    r["payload_json"] = (
+                        json.loads(r["payload_json"]) if r.get("payload_json") else {}
+                    )
+                except Exception:
+                    r["payload_json"] = {}
+            return rows
+
+    def update_calendar_outbox_status(
+        self,
+        outbox_id: str,
+        status: str,
+        error: Optional[str] = None,
+        event_id: Optional[str] = None,
+    ) -> None:
+        with self._get_email_connection() as conn:
+            conn.execute(
+                """
+                UPDATE calendar_outbox
+                SET status = ?, error = ?, event_id = COALESCE(?, event_id),
+                    attempt_count = attempt_count + 1,
+                    last_attempt_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (status, error, event_id, outbox_id),
+            )
+            conn.commit()
+
     def supports_embeddings(self) -> bool:
         return False
 
@@ -230,6 +655,7 @@ class SqliteDatabase(DatabaseInterface):
 
     def initialize(self) -> None:
         self._init_email_db()
+        self.ensure_calendar_schema()
 
     @contextmanager
     def connection(self) -> Iterator[Any]:
@@ -276,6 +702,8 @@ class SqliteDatabase(DatabaseInterface):
                     dmarc TEXT,
                     is_suspicious_sender INTEGER DEFAULT 0,
                     suspicious_sender_signals TEXT,
+                    security_score INTEGER DEFAULT 100,
+                    warning_type TEXT,
                     PRIMARY KEY (uid, folder)
                 )
                 """
@@ -288,6 +716,8 @@ class SqliteDatabase(DatabaseInterface):
                 ("dmarc", "TEXT"),
                 ("is_suspicious_sender", "INTEGER DEFAULT 0"),
                 ("suspicious_sender_signals", "TEXT"),
+                ("security_score", "INTEGER DEFAULT 100"),
+                ("warning_type", "TEXT"),
             ]:
                 try:
                     conn.execute(
@@ -459,6 +889,8 @@ class SqliteDatabase(DatabaseInterface):
         dmarc: Optional[str] = None,
         is_suspicious_sender: bool = False,
         suspicious_sender_signals: Optional[dict[str, Any]] = None,
+        security_score: int = 100,
+        warning_type: Optional[str] = None,
     ) -> None:
         import hashlib
 
@@ -482,8 +914,9 @@ class SqliteDatabase(DatabaseInterface):
                     is_unread, is_important, size, modseq, synced_at, in_reply_to,
                     references_header, content_hash, gmail_thread_id, gmail_msgid,
                     gmail_labels, has_attachments, attachment_filenames,
-                    auth_results_raw, spf, dkim, dmarc, is_suspicious_sender, suspicious_sender_signals
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    auth_results_raw, spf, dkim, dmarc, is_suspicious_sender, suspicious_sender_signals,
+                    security_score, warning_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     uid,
@@ -518,6 +951,8 @@ class SqliteDatabase(DatabaseInterface):
                     dmarc,
                     1 if is_suspicious_sender else 0,
                     suspicious_sender_signals_str,
+                    security_score,
+                    warning_type,
                 ),
             )
             conn.commit()
@@ -1034,7 +1469,113 @@ class PostgresDatabase(DatabaseInterface):
                     ON emails USING gin(to_tsvector('english', COALESCE(subject, '') || ' ' || COALESCE(body_text, '')))
                     """
                 )
+
+                # Contacts tables
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS contacts (
+                        id SERIAL PRIMARY KEY,
+                        email VARCHAR(255) NOT NULL UNIQUE,
+                        display_name VARCHAR(255),
+                        first_name VARCHAR(100),
+                        last_name VARCHAR(100),
+                        email_count INT DEFAULT 0,
+                        last_email_date TIMESTAMPTZ,
+                        first_email_date TIMESTAMPTZ,
+                        is_vip BOOLEAN DEFAULT FALSE,
+                        is_internal BOOLEAN DEFAULT FALSE,
+                        organization VARCHAR(255),
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ DEFAULT NOW(),
+                        search_vector tsvector GENERATED ALWAYS AS (
+                            to_tsvector('english', 
+                                coalesce(display_name, '') || ' ' || 
+                                coalesce(email, '') || ' ' ||
+                                coalesce(organization, '')
+                            )
+                        ) STORED
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS contact_interactions (
+                        id SERIAL PRIMARY KEY,
+                        contact_id INT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                        email_uid INT NOT NULL,
+                        email_folder VARCHAR(100) NOT NULL,
+                        direction VARCHAR(10) NOT NULL,
+                        subject TEXT,
+                        email_date TIMESTAMPTZ NOT NULL,
+                        message_id VARCHAR(500),
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        CONSTRAINT unique_interaction UNIQUE (contact_id, email_uid, email_folder, direction)
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS contact_notes (
+                        id SERIAL PRIMARY KEY,
+                        contact_id INT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                        note TEXT NOT NULL,
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS contact_tags (
+                        id SERIAL PRIMARY KEY,
+                        contact_id INT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                        tag VARCHAR(50) NOT NULL,
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        CONSTRAINT unique_contact_tag UNIQUE (contact_id, tag)
+                    )
+                    """
+                )
+
+                # Contact Indexes
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_contacts_email ON contacts(email)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_contacts_last_email_date ON contacts(last_email_date DESC)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_contacts_email_count ON contacts(email_count DESC)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_contacts_search_vector ON contacts USING GIN(search_vector)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_contacts_is_vip ON contacts(is_vip) WHERE is_vip = TRUE"
+                )
+
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_contact_interactions_contact_id ON contact_interactions(contact_id)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_contact_interactions_email_date ON contact_interactions(email_date DESC)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_contact_interactions_email_uid ON contact_interactions(email_uid, email_folder)"
+                )
+
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_contact_notes_contact_id ON contact_notes(contact_id)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_contact_tags_contact_id ON contact_tags(contact_id)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_contact_tags_tag ON contact_tags(tag)"
+                )
+
                 conn.commit()
+
+        self.ensure_calendar_schema()
 
     @contextmanager
     def connection(self) -> Iterator[Any]:
@@ -1080,6 +1621,8 @@ class PostgresDatabase(DatabaseInterface):
         dmarc: Optional[str] = None,
         is_suspicious_sender: bool = False,
         suspicious_sender_signals: Optional[dict[str, Any]] = None,
+        security_score: int = 100,
+        warning_type: Optional[str] = None,
     ) -> None:
         import hashlib
 
@@ -1104,8 +1647,9 @@ class PostgresDatabase(DatabaseInterface):
                         is_unread, is_important, size, modseq, synced_at, in_reply_to,
                         references_header, content_hash, gmail_thread_id, gmail_msgid,
                         gmail_labels, has_attachments, attachment_filenames,
-                        auth_results_raw, spf, dkim, dmarc, is_suspicious_sender, suspicious_sender_signals
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        auth_results_raw, spf, dkim, dmarc, is_suspicious_sender, suspicious_sender_signals,
+                        security_score, warning_type
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (uid, folder) DO UPDATE SET
                         message_id = EXCLUDED.message_id,
                         subject = EXCLUDED.subject,
@@ -1136,7 +1680,9 @@ class PostgresDatabase(DatabaseInterface):
                         dkim = EXCLUDED.dkim,
                         dmarc = EXCLUDED.dmarc,
                         is_suspicious_sender = EXCLUDED.is_suspicious_sender,
-                        suspicious_sender_signals = EXCLUDED.suspicious_sender_signals
+                        suspicious_sender_signals = EXCLUDED.suspicious_sender_signals,
+                        security_score = EXCLUDED.security_score,
+                        warning_type = EXCLUDED.warning_type
                     """,
                     (
                         uid,
@@ -1152,8 +1698,8 @@ class PostgresDatabase(DatabaseInterface):
                         body_text,
                         body_html,
                         flags,
-                        is_unread,
-                        is_important,
+                        1 if is_unread else 0,
+                        1 if is_important else 0,
                         size,
                         modseq,
                         in_reply_to,
@@ -1170,6 +1716,8 @@ class PostgresDatabase(DatabaseInterface):
                         dmarc,
                         is_suspicious_sender,
                         suspicious_sender_signals_json,
+                        security_score,
+                        warning_type,
                     ),
                 )
                 conn.commit()
@@ -1450,6 +1998,341 @@ class PostgresDatabase(DatabaseInterface):
                         created_at = NOW()
                     """,
                     (uid, folder, embedding, model, content_hash),
+                )
+                conn.commit()
+
+    def get_user_preferences(self, user_id: str) -> dict[str, Any]:
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT prefs_json FROM user_preferences WHERE user_id = %s",
+                    (user_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return {}
+                try:
+                    return json.loads(row[0]) if row[0] else {}
+                except Exception:
+                    return {}
+
+    def upsert_user_preferences(self, user_id: str, prefs: dict[str, Any]) -> None:
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO user_preferences (user_id, prefs_json, updated_at)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        prefs_json = EXCLUDED.prefs_json,
+                        updated_at = NOW()
+                    """,
+                    (user_id, json.dumps(prefs)),
+                )
+                conn.commit()
+
+    def ensure_calendar_schema(self) -> None:
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS calendar_sync_state (
+                        calendar_id TEXT PRIMARY KEY,
+                        sync_token TEXT,
+                        window_start TEXT NOT NULL,
+                        window_end TEXT NOT NULL,
+                        last_full_sync_at TIMESTAMPTZ,
+                        last_incremental_sync_at TIMESTAMPTZ,
+                        status TEXT NOT NULL DEFAULT 'ok',
+                        last_error TEXT
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS calendar_events_cache (
+                        calendar_id TEXT NOT NULL,
+                        event_id TEXT NOT NULL,
+                        etag TEXT,
+                        updated TIMESTAMPTZ,
+                        status TEXT,
+                        start_ts_utc TIMESTAMPTZ,
+                        end_ts_utc TIMESTAMPTZ,
+                        start_date DATE,
+                        end_date DATE,
+                        is_all_day BOOLEAN DEFAULT FALSE,
+                        summary TEXT,
+                        location TEXT,
+                        local_status TEXT NOT NULL DEFAULT 'synced',
+                        raw_json JSONB NOT NULL,
+                        PRIMARY KEY (calendar_id, event_id)
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS calendar_outbox (
+                        id UUID PRIMARY KEY,
+                        op_type TEXT NOT NULL,
+                        calendar_id TEXT NOT NULL,
+                        event_id TEXT,
+                        local_temp_id TEXT,
+                        payload_json JSONB NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        attempt_count INTEGER NOT NULL DEFAULT 0,
+                        last_attempt_at TIMESTAMPTZ,
+                        error TEXT,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_cal_events_start_ts ON calendar_events_cache(calendar_id, start_ts_utc)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_cal_events_start_date ON calendar_events_cache(calendar_id, start_date)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_cal_outbox_status ON calendar_outbox(status, created_at)"
+                )
+                conn.commit()
+
+    def upsert_calendar_sync_state(
+        self,
+        calendar_id: str,
+        window_start: str,
+        window_end: str,
+        sync_token: Optional[str],
+        status: str = "ok",
+        last_error: Optional[str] = None,
+        last_full_sync_at: Optional[str] = None,
+        last_incremental_sync_at: Optional[str] = None,
+    ) -> None:
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO calendar_sync_state (
+                        calendar_id, sync_token, window_start, window_end,
+                        last_full_sync_at, last_incremental_sync_at, status, last_error
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT(calendar_id) DO UPDATE SET
+                        sync_token = EXCLUDED.sync_token,
+                        window_start = EXCLUDED.window_start,
+                        window_end = EXCLUDED.window_end,
+                        last_full_sync_at = COALESCE(EXCLUDED.last_full_sync_at, calendar_sync_state.last_full_sync_at),
+                        last_incremental_sync_at = COALESCE(EXCLUDED.last_incremental_sync_at, calendar_sync_state.last_incremental_sync_at),
+                        status = EXCLUDED.status,
+                        last_error = EXCLUDED.last_error
+                    """,
+                    (
+                        calendar_id,
+                        sync_token,
+                        window_start,
+                        window_end,
+                        last_full_sync_at,
+                        last_incremental_sync_at,
+                        status,
+                        last_error,
+                    ),
+                )
+                conn.commit()
+
+    def get_calendar_sync_state(self, calendar_id: str) -> Optional[dict[str, Any]]:
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM calendar_sync_state WHERE calendar_id = %s",
+                    (calendar_id,),
+                )
+                row = cur.fetchone()
+                if row:
+                    columns = [desc[0] for desc in cur.description]
+                    return dict(zip(columns, row))
+                return None
+
+    def list_calendar_sync_states(self) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM calendar_sync_state")
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+    def upsert_calendar_event_cache(
+        self,
+        calendar_id: str,
+        event_id: str,
+        raw_json: dict[str, Any],
+        etag: Optional[str] = None,
+        updated: Optional[str] = None,
+        status: Optional[str] = None,
+        start_ts_utc: Optional[str] = None,
+        end_ts_utc: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        is_all_day: bool = False,
+        summary: Optional[str] = None,
+        location: Optional[str] = None,
+        local_status: str = "synced",
+    ) -> None:
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO calendar_events_cache (
+                        calendar_id, event_id, etag, updated, status,
+                        start_ts_utc, end_ts_utc, start_date, end_date, is_all_day,
+                        summary, location, local_status, raw_json
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT(calendar_id, event_id) DO UPDATE SET
+                        etag = EXCLUDED.etag,
+                        updated = EXCLUDED.updated,
+                        status = EXCLUDED.status,
+                        start_ts_utc = EXCLUDED.start_ts_utc,
+                        end_ts_utc = EXCLUDED.end_ts_utc,
+                        start_date = EXCLUDED.start_date,
+                        end_date = EXCLUDED.end_date,
+                        is_all_day = EXCLUDED.is_all_day,
+                        summary = EXCLUDED.summary,
+                        location = EXCLUDED.location,
+                        local_status = EXCLUDED.local_status,
+                        raw_json = EXCLUDED.raw_json
+                    """,
+                    (
+                        calendar_id,
+                        event_id,
+                        etag,
+                        updated,
+                        status,
+                        start_ts_utc,
+                        end_ts_utc,
+                        start_date,
+                        end_date,
+                        is_all_day,
+                        summary,
+                        location,
+                        local_status,
+                        json.dumps(raw_json),
+                    ),
+                )
+                conn.commit()
+
+    def delete_calendar_event_cache(self, calendar_id: str, event_id: str) -> None:
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM calendar_events_cache WHERE calendar_id = %s AND event_id = %s",
+                    (calendar_id, event_id),
+                )
+                conn.commit()
+
+    def query_calendar_events_cached(
+        self,
+        calendar_ids: list[str],
+        time_min: str,
+        time_max: str,
+    ) -> list[dict[str, Any]]:
+        if not calendar_ids:
+            return []
+
+        query = """
+            SELECT raw_json, local_status
+            FROM calendar_events_cache
+            WHERE calendar_id = ANY(%s)
+              AND (
+                (is_all_day = FALSE AND start_ts_utc < %s AND end_ts_utc > %s)
+                OR
+                (is_all_day = TRUE AND start_date < %s::date AND end_date > %s::date)
+              )
+            ORDER BY COALESCE(start_ts_utc, start_date::timestamp) ASC
+        """
+
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    query,
+                    (calendar_ids, time_max, time_min, time_max, time_min),
+                )
+                results: list[dict[str, Any]] = []
+                for row in cur.fetchall():
+                    evt = row[0]
+                    if isinstance(evt, str):
+                        try:
+                            evt = json.loads(evt)
+                        except:
+                            continue
+                    evt["_local_status"] = row[1]
+                    results.append(evt)
+                return results
+
+    def enqueue_calendar_outbox(
+        self,
+        op_type: str,
+        calendar_id: str,
+        payload_json: dict[str, Any],
+        event_id: Optional[str] = None,
+        local_temp_id: Optional[str] = None,
+    ) -> str:
+        outbox_id = str(uuid.uuid4())
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO calendar_outbox (id, op_type, calendar_id, event_id, local_temp_id, payload_json)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        outbox_id,
+                        op_type,
+                        calendar_id,
+                        event_id,
+                        local_temp_id,
+                        json.dumps(payload_json),
+                    ),
+                )
+                conn.commit()
+        return outbox_id
+
+    def list_calendar_outbox(
+        self, statuses: Optional[list[str]] = None
+    ) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                if statuses:
+                    cur.execute(
+                        "SELECT * FROM calendar_outbox WHERE status = ANY(%s) ORDER BY created_at",
+                        (statuses,),
+                    )
+                else:
+                    cur.execute("SELECT * FROM calendar_outbox ORDER BY created_at")
+                columns = [desc[0] for desc in cur.description]
+                rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+                for r in rows:
+                    if isinstance(r.get("payload_json"), str):
+                        try:
+                            r["payload_json"] = json.loads(r["payload_json"])
+                        except:
+                            r["payload_json"] = {}
+                return rows
+
+    def update_calendar_outbox_status(
+        self,
+        outbox_id: str,
+        status: str,
+        error: Optional[str] = None,
+        event_id: Optional[str] = None,
+    ) -> None:
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE calendar_outbox
+                    SET status = %s, error = %s, event_id = COALESCE(%s, event_id),
+                        attempt_count = attempt_count + 1,
+                        last_attempt_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (status, error, event_id, outbox_id),
                 )
                 conn.commit()
 

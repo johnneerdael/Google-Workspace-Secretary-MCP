@@ -3,6 +3,7 @@ import logging
 import os
 import smtplib
 import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -26,6 +27,7 @@ from workspace_secretary.config import load_config, ServerConfig, ImapConfig
 from workspace_secretary.engine.imap_sync import ImapClient
 from workspace_secretary.engine.calendar_sync import CalendarClient
 from workspace_secretary.engine.database import DatabaseInterface, create_database
+from workspace_secretary.engine.analysis import PhishingAnalyzer
 
 if TYPE_CHECKING:
     from workspace_secretary.models import Email
@@ -59,6 +61,7 @@ class EngineState:
         self.idle_client: Optional[ImapClient] = None
         self.calendar_client: Optional[CalendarClient] = None
         self.database: Optional[DatabaseInterface] = None
+        self.phishing_analyzer = PhishingAnalyzer()
         self.sync_task: Optional[asyncio.Task] = None
         self.idle_task: Optional[asyncio.Task] = None
         self.embeddings_task: Optional[asyncio.Task] = None
@@ -745,89 +748,6 @@ async def sync_emails_parallel():
         )
 
 
-def _parse_authentication_results(headers: dict[str, Any]) -> dict[str, Any]:
-    raw_values: list[str] = []
-    for k in ["Authentication-Results", "ARC-Authentication-Results", "Received-SPF"]:
-        v = headers.get(k)
-        if not v:
-            continue
-        if isinstance(v, list):
-            raw_values.extend([str(x) for x in v if x])
-        else:
-            raw_values.append(str(v))
-
-    combined = "\n".join(raw_values)
-    combined_l = combined.lower()
-
-    def _has_result(prefix: str, value: str) -> bool:
-        return bool(
-            re.search(rf"\b{re.escape(prefix)}\s*=\s*{re.escape(value)}\b", combined_l)
-        )
-
-    spf_pass = _has_result("spf", "pass") or _has_result("spf", "bestguesspass")
-    spf_fail = _has_result("spf", "fail") or _has_result("spf", "softfail")
-    dkim_pass = _has_result("dkim", "pass")
-    dkim_fail = _has_result("dkim", "fail")
-    dmarc_pass = _has_result("dmarc", "pass")
-    dmarc_fail = _has_result("dmarc", "fail")
-
-    return {
-        "auth_results_raw": combined or None,
-        "spf": "pass" if spf_pass else "fail" if spf_fail else "unknown",
-        "dkim": "pass" if dkim_pass else "fail" if dkim_fail else "unknown",
-        "dmarc": "pass" if dmarc_pass else "fail" if dmarc_fail else "unknown",
-    }
-
-
-def _extract_domain(addr: str) -> str:
-    _, email_addr = parseaddr(addr or "")
-    if "@" not in email_addr:
-        return ""
-    return email_addr.split("@", 1)[1].strip().lower()
-
-
-def _is_punycode_domain(domain: str) -> bool:
-    if not domain:
-        return False
-    try:
-        decoded = idna.decode(domain)
-        return decoded != domain
-    except Exception:
-        return "xn--" in domain
-
-
-def _sender_suspicion_signals(from_addr_raw: str, reply_to_raw: str) -> dict[str, Any]:
-    from_domain = _extract_domain(from_addr_raw)
-    reply_to_domain = _extract_domain(reply_to_raw)
-
-    reply_to_differs = bool(
-        reply_to_domain and from_domain and reply_to_domain != from_domain
-    )
-
-    display_name, parsed_addr = parseaddr(from_addr_raw)
-    display_name_l = (display_name or "").lower()
-    parsed_local = parsed_addr.split("@", 1)[0].lower() if "@" in parsed_addr else ""
-
-    display_name_mismatch = False
-    if display_name_l and parsed_local:
-        token = re.sub(r"[^a-z0-9]+", "", parsed_local)
-        if token and token not in re.sub(r"[^a-z0-9]+", "", display_name_l):
-            display_name_mismatch = True
-
-    punycode_domain = _is_punycode_domain(from_domain) or _is_punycode_domain(
-        reply_to_domain
-    )
-
-    return {
-        "reply_to_differs": reply_to_differs,
-        "display_name_mismatch": display_name_mismatch,
-        "punycode_domain": punycode_domain,
-        "is_suspicious_sender": bool(
-            reply_to_differs or display_name_mismatch or punycode_domain
-        ),
-    }
-
-
 def _email_to_db_params(email_obj: "Email", folder: str) -> dict[str, Any]:
     """Convert Email dataclass to database upsert parameters."""
     date_str = email_obj.date.isoformat() if email_obj.date else None
@@ -842,15 +762,22 @@ def _email_to_db_params(email_obj: "Email", folder: str) -> dict[str, Any]:
     if not isinstance(headers, dict):
         headers = {}
 
-    auth = _parse_authentication_results(headers)
+    analysis = state.phishing_analyzer.analyze_email(
+        {
+            "from_addr": str(email_obj.from_),
+            "headers": headers,
+            "reply_to": headers.get("Reply-To"),
+        }
+    )
 
-    reply_to_raw = ""
-    reply_to_v = headers.get("Reply-To")
-    if reply_to_v:
-        reply_to_raw = str(reply_to_v)
+    auth = analysis["auth_results"]
+    signals = analysis["signals"]
 
-    from_addr_raw = str(email_obj.from_)
-    suspicious = _sender_suspicion_signals(from_addr_raw, reply_to_raw)
+    is_suspicious_sender = (
+        signals["reply_to_differs"]
+        or signals["display_name_mismatch"]
+        or signals["punycode_domain"]
+    )
 
     return {
         "uid": email_obj.uid or 0,
@@ -883,11 +810,13 @@ def _email_to_db_params(email_obj: "Email", folder: str) -> dict[str, Any]:
         "spf": auth["spf"],
         "dkim": auth["dkim"],
         "dmarc": auth["dmarc"],
-        "is_suspicious_sender": suspicious["is_suspicious_sender"],
+        "is_suspicious_sender": is_suspicious_sender,
+        "security_score": analysis["score"],
+        "warning_type": analysis["warning_type"],
         "suspicious_sender_signals": {
-            "reply_to_differs": suspicious["reply_to_differs"],
-            "display_name_mismatch": suspicious["display_name_mismatch"],
-            "punycode_domain": suspicious["punycode_domain"],
+            "reply_to_differs": signals["reply_to_differs"],
+            "display_name_mismatch": signals["display_name_mismatch"],
+            "punycode_domain": signals["punycode_domain"],
         },
     }
 
@@ -1665,31 +1594,84 @@ async def download_attachment(folder: str, uid: int, filename: str):
 # ============================================================================
 
 
+def _get_selected_calendar_ids(db: DatabaseInterface) -> list[str]:
+    prefs = db.get_user_preferences("default")
+    return prefs.get("calendar", {}).get("selected_calendar_ids", ["primary"])
+
+
+def _get_calendar_sync_metadata(db: DatabaseInterface, calendar_ids: list[str]) -> dict:
+    from datetime import datetime
+
+    states = [db.get_calendar_sync_state(cid) for cid in calendar_ids]
+    last_sync_values = []
+    for s in states:
+        if s and s.get("last_incremental_sync_at"):
+            last_sync_values.append(s["last_incremental_sync_at"])
+
+    last_sync = min(last_sync_values) if last_sync_values else None
+
+    outbox = db.list_calendar_outbox(statuses=["pending", "conflict"])
+    pending_count = sum(1 for op in outbox if op["status"] == "pending")
+    conflict_count = sum(1 for op in outbox if op["status"] == "conflict")
+
+    is_stale = True
+    if last_sync:
+        try:
+            if isinstance(last_sync, str):
+                from dateutil import parser as dateutil_parser
+
+                last_sync_dt = dateutil_parser.parse(last_sync)
+            else:
+                last_sync_dt = last_sync
+            is_stale = (
+                datetime.utcnow().replace(tzinfo=None)
+                - last_sync_dt.replace(tzinfo=None)
+            ).total_seconds() > 120
+        except:
+            is_stale = True
+
+    return {
+        "last_sync": str(last_sync) if last_sync else None,
+        "pending_count": pending_count,
+        "conflict_count": conflict_count,
+        "is_stale": is_stale,
+    }
+
+
 @app.get("/api/calendar/events")
 async def list_calendar_events(
     time_min: Optional[str] = Query(None, description="Start time (ISO format)"),
     time_max: Optional[str] = Query(None, description="End time (ISO format)"),
     calendar_id: str = Query("primary", description="Calendar ID"),
 ):
-    """List calendar events within a time range."""
     if not state.enrolled:
         return {
             "status": "no_account",
             "message": "No account configured. Run auth_setup to add an account.",
         }
 
-    if not state.calendar_client or not state.calendar_client.service:
-        return {"status": "error", "message": "Calendar not connected"}
+    if not state.database:
+        return {"status": "error", "message": "Database not initialized"}
 
     try:
-        # Default to next 7 days if not specified
         if not time_min:
             time_min = datetime.utcnow().isoformat() + "Z"
         if not time_max:
             time_max = (datetime.utcnow() + timedelta(days=7)).isoformat() + "Z"
 
-        events = state.calendar_client.list_events(time_min, time_max, calendar_id)
-        return {"status": "ok", "events": events}
+        selected_ids = _get_selected_calendar_ids(state.database)
+
+        events = state.database.query_calendar_events_cached(
+            selected_ids, time_min, time_max
+        )
+
+        metadata = _get_calendar_sync_metadata(state.database, selected_ids)
+
+        return {
+            "status": "ok",
+            "events": events,
+            "metadata": metadata,
+        }
 
     except Exception as e:
         logger.error(f"List calendar events error: {e}")
@@ -1728,8 +1710,8 @@ async def create_calendar_event(req: CalendarEventRequest):
             "message": "No account configured. Run auth_setup to add an account.",
         }
 
-    if not state.calendar_client or not state.calendar_client.service:
-        return {"status": "error", "message": "Calendar not connected"}
+    if not state.database:
+        return {"status": "error", "message": "Database not initialized"}
 
     event_data: dict[str, Any] = {
         "summary": req.summary,
@@ -1745,23 +1727,50 @@ async def create_calendar_event(req: CalendarEventRequest):
 
     conference_version = 0
     if req.meeting_type == "google_meet":
-        import uuid
+        import uuid as uuid_lib
 
         conference_version = 1
         event_data["conferenceData"] = {
             "createRequest": {
-                "requestId": str(uuid.uuid4()),
+                "requestId": str(uuid_lib.uuid4()),
                 "conferenceSolutionKey": {"type": "hangoutsMeet"},
             }
         }
 
     try:
-        event = state.calendar_client.create_event(
-            event_data, req.calendar_id, conference_data_version=conference_version
+        local_temp_id = f"local:{uuid.uuid4()}"
+
+        outbox_id = state.database.enqueue_calendar_outbox(
+            op_type="create",
+            calendar_id=req.calendar_id,
+            payload_json=event_data,
+            local_temp_id=local_temp_id,
         )
 
-        return {"status": "ok", "event": event}
+        from dateutil import parser as dateutil_parser
+
+        start_dt = dateutil_parser.parse(req.start_time)
+        end_dt = dateutil_parser.parse(req.end_time)
+
+        state.database.upsert_calendar_event_cache(
+            calendar_id=req.calendar_id,
+            event_id=local_temp_id,
+            raw_json=event_data,
+            start_ts_utc=start_dt.isoformat(),
+            end_ts_utc=end_dt.isoformat(),
+            summary=req.summary,
+            location=req.location,
+            local_status="pending",
+        )
+
+        return {
+            "status": "queued",
+            "event_id": local_temp_id,
+            "outbox_id": outbox_id,
+            "pending": True,
+        }
     except Exception as e:
+        logger.error(f"Create calendar event error: {e}")
         return {"status": "error", "message": str(e)}
 
 
@@ -1821,6 +1830,12 @@ async def list_calendars():
 
     try:
         calendars = state.calendar_client.list_calendars()
+
+        if state.database:
+            selected_ids = _get_selected_calendar_ids(state.database)
+            for cal in calendars:
+                cal["selected"] = cal.get("id") in selected_ids
+
         return {"status": "ok", "calendars": calendars}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -1881,8 +1896,14 @@ async def update_calendar_event(
             "message": "No account configured. Run auth_setup to add an account.",
         }
 
-    if not state.calendar_client or not state.calendar_client.service:
-        return {"status": "error", "message": "Calendar not connected"}
+    if not state.database:
+        return {"status": "error", "message": "Database not initialized"}
+
+    if event_id.startswith("local:"):
+        return {
+            "status": "error",
+            "message": "Cannot update event that has not been synced yet",
+        }
 
     event_data: dict[str, Any] = {}
     if req.summary is not None:
@@ -1899,9 +1920,47 @@ async def update_calendar_event(
         event_data["attendees"] = [{"email": email} for email in req.attendees]
 
     try:
-        event = state.calendar_client.update_event(calendar_id, event_id, event_data)
-        return {"status": "ok", "event": event}
+        outbox_id = state.database.enqueue_calendar_outbox(
+            op_type="patch",
+            calendar_id=calendar_id,
+            payload_json=event_data,
+            event_id=event_id,
+        )
+
+        cached = state.database.query_calendar_events_cached(
+            [calendar_id], "1970-01-01T00:00:00Z", "2100-01-01T00:00:00Z"
+        )
+        existing_event = next((e for e in cached if e.get("id") == event_id), None)
+
+        if existing_event:
+            if req.summary:
+                existing_event["summary"] = req.summary
+            if req.start_time:
+                existing_event["start"] = {"dateTime": req.start_time}
+            if req.end_time:
+                existing_event["end"] = {"dateTime": req.end_time}
+
+            from dateutil import parser as dateutil_parser
+
+            start_dt = dateutil_parser.parse(
+                existing_event["start"].get("dateTime", "")
+            )
+            end_dt = dateutil_parser.parse(existing_event["end"].get("dateTime", ""))
+
+            state.database.upsert_calendar_event_cache(
+                calendar_id=calendar_id,
+                event_id=event_id,
+                raw_json=existing_event,
+                start_ts_utc=start_dt.isoformat(),
+                end_ts_utc=end_dt.isoformat(),
+                summary=existing_event.get("summary"),
+                location=existing_event.get("location"),
+                local_status="pending",
+            )
+
+        return {"status": "queued", "outbox_id": outbox_id, "pending": True}
     except Exception as e:
+        logger.error(f"Update calendar event error: {e}")
         return {"status": "error", "message": str(e)}
 
 
@@ -1913,13 +1972,60 @@ async def delete_calendar_event(calendar_id: str, event_id: str):
             "message": "No account configured. Run auth_setup to add an account.",
         }
 
-    if not state.calendar_client or not state.calendar_client.service:
-        return {"status": "error", "message": "Calendar not connected"}
+    if not state.database:
+        return {"status": "error", "message": "Database not initialized"}
 
     try:
-        state.calendar_client.delete_event(calendar_id, event_id)
-        return {"status": "ok", "message": f"Event {event_id} deleted"}
+        outbox_id = state.database.enqueue_calendar_outbox(
+            op_type="delete",
+            calendar_id=calendar_id,
+            payload_json={},
+            event_id=event_id,
+        )
+
+        cached = state.database.query_calendar_events_cached(
+            [calendar_id], "1970-01-01T00:00:00Z", "2100-01-01T00:00:00Z"
+        )
+        existing_event = next((e for e in cached if e.get("id") == event_id), None)
+
+        if existing_event:
+            existing_event["status"] = "cancelled"
+
+            from dateutil import parser as dateutil_parser
+
+            start_dt = dateutil_parser.parse(
+                existing_event["start"].get(
+                    "dateTime", existing_event["start"].get("date", "")
+                )
+            )
+            end_dt = dateutil_parser.parse(
+                existing_event["end"].get(
+                    "dateTime", existing_event["end"].get("date", "")
+                )
+            )
+
+            state.database.upsert_calendar_event_cache(
+                calendar_id=calendar_id,
+                event_id=event_id,
+                raw_json=existing_event,
+                status="cancelled",
+                start_ts_utc=start_dt.isoformat()
+                if existing_event["start"].get("dateTime")
+                else None,
+                end_ts_utc=end_dt.isoformat()
+                if existing_event["end"].get("dateTime")
+                else None,
+                start_date=existing_event["start"].get("date"),
+                end_date=existing_event["end"].get("date"),
+                is_all_day=bool(existing_event["start"].get("date")),
+                summary=existing_event.get("summary"),
+                location=existing_event.get("location"),
+                local_status="pending",
+            )
+
+        return {"status": "queued", "outbox_id": outbox_id, "pending": True}
     except Exception as e:
+        logger.error(f"Delete calendar event error: {e}")
         return {"status": "error", "message": str(e)}
 
 

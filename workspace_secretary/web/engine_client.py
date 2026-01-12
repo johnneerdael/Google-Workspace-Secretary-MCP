@@ -110,6 +110,10 @@ async def create_draft_reply(
     )
 
 
+async def get_status() -> dict:
+    return await _request("GET", "/api/status")
+
+
 async def get_folders() -> dict:
     return await _request("GET", "/api/folders")
 
@@ -134,6 +138,10 @@ async def get_calendar_availability(time_min: str, time_max: str) -> dict:
     return await _request(
         "GET", f"/api/calendar/availability?time_min={time_min}&time_max={time_max}"
     )
+
+
+async def list_calendars() -> dict:
+    return await _request("GET", "/api/calendar/list")
 
 
 async def create_calendar_event(

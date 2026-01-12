@@ -330,6 +330,9 @@ def get_session(request: Request) -> Optional[Session]:
 
 class CSRFMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        if request.method.upper() in {"GET", "HEAD", "OPTIONS", "TRACE"}:
+            return await call_next(request)
+
         method = request.method.upper()
         if method in {"POST", "PUT", "PATCH", "DELETE"}:
             session = get_session(request)

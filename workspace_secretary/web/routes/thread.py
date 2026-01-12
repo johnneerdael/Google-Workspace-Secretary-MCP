@@ -9,7 +9,7 @@ import httpx
 
 from workspace_secretary.web import database as db
 from workspace_secretary.web.auth import require_auth, Session
-from workspace_secretary.web.engine_client import ENGINE_URL, get_engine_url
+from workspace_secretary.web.engine_client import get_engine_url
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
