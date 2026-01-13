@@ -33,7 +33,7 @@ X-GM-THRID advantages:
 
 Gmail's IMAP server exposes thread IDs through the `X-GM-THRID` attribute:
 
-```imap
+```text
 # Fetch thread ID for messages
 A001 FETCH 1:4 (X-GM-THRID)
 * 1 FETCH (X-GM-THRID 1278455344230334865)
@@ -49,7 +49,7 @@ Messages 2, 3, and 4 share the same thread ID - they're in the same conversation
 
 Find all messages in a thread using IMAP SEARCH:
 
-```imap
+```text
 A002 UID SEARCH X-GM-THRID 1266894439832287888
 * SEARCH 2 3 4
 A002 OK SEARCH (Success)
@@ -164,7 +164,7 @@ We leverage additional Gmail extensions:
 
 Unique message identifier (survives moves between folders):
 
-```imap
+```text
 A003 FETCH 1 (X-GM-MSGID)
 * 1 FETCH (X-GM-MSGID 1278455344230334866)
 ```
@@ -173,7 +173,7 @@ A003 FETCH 1 (X-GM-MSGID)
 
 Gmail labels applied to the message:
 
-```imap
+```text
 A004 FETCH 1 (X-GM-LABELS)
 * 1 FETCH (X-GM-LABELS ("\\Important" "\\Starred" "Work" "Project-X"))
 ```

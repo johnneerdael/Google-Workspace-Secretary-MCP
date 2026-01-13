@@ -35,7 +35,7 @@ server {
 
 ### Caddy + OAuth/forward-auth (e.g., Authelia)
 
-```caddyfile
+```nginx
 mail.yourdomain.com {
     forward_auth authelia:9091 {
         uri /api/verify?rd=https://auth.yourdomain.com
