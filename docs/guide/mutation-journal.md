@@ -809,7 +809,7 @@ Get mutation journal health status.
 
 ## Related Documentation
 
-- [Architecture Overview](/architecture) - System design and data flow
+- [Architecture Overview](/guide/architecture) - System design and data flow
 - [Web UI Guide](./web-ui) - Using the web interface
 - [Agent Patterns](./agents) - HITL safety patterns for AI agents
 - [Security Guide](./security) - Authentication and data protection

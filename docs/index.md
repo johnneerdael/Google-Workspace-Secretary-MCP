@@ -136,7 +136,7 @@ The AI:
   - Embedding sync no longer errors (missing methods added)
   - CSRF tokens now sent correctly with HTMX requests
 
-See the [Architecture Documentation](/architecture) for the new database layer structure.
+See the [Architecture Documentation](/guide/architecture) for the new database layer structure.
 
 ## What's New in v4.7.x
 
@@ -326,7 +326,7 @@ See [Embeddings Guide](/embeddings/) for configuration details.
 | `POST /api/email/send` | Send email via Gmail API |
 | `POST /api/email/draft-reply` | Create draft reply in Gmail |
 
-See the [Architecture Documentation](/architecture) for the complete technical overview.
+See the [Architecture Documentation](/guide/architecture) for the complete technical overview.
 
 ## What's New in v3.2.0
 
@@ -364,7 +364,7 @@ See the [Architecture Documentation](/architecture) for the complete technical o
 | **SQLite** (default) | Simple deployment, single user | FTS5 keyword search, WAL mode |
 | **PostgreSQL + pgvector** | AI features needed | Semantic search, embeddings, similarity matching |
 
-See the [Architecture Documentation](/architecture) for technical details.
+See the [Architecture Documentation](/guide/architecture) for technical details.
 
 ## What's New in v2.2.0
 
