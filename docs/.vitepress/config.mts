@@ -2,9 +2,9 @@ import { defineConfig } from 'vitepress'
 
 // https://vitepress.dev/reference/site-config
 export default defineConfig({
-  title: "Gmail Secretary MCP",
-  description: "AI-native secretary for Gmail and Google Calendar via MCP",
-  base: process.env.VITEPRESS_BASE || "/gmail-secretary-mcp/",
+  title: "Google MailPilot",
+  description: "AI-native Pilot System for Gmail and Google Calendar",
+  base: process.env.VITEPRESS_BASE || "/google-mailpilot/",
   
   themeConfig: {
     // https://vitepress.dev/reference/default-theme-config
