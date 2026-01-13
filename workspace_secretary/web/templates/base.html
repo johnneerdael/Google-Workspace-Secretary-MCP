@@ -83,7 +83,7 @@
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 <div class="flex justify-between h-16">
                     <div class="flex">
-                        <div class="flex items-center sm:hidden mr-2">
+                        <div class="flex items-center md:hidden mr-2">
                             <button @click="mobileMenuOpen = !mobileMenuOpen" type="button" 
                                     class="btn-icon">
                                 <span class="sr-only">Open main menu</span>
@@ -100,7 +100,7 @@
                                 📧 Secretary
                             </a>
                         </div>
-                        <div class="hidden sm:ml-6 sm:flex sm:space-x-8">
+                        <div class="hidden md:ml-6 md:flex md:space-x-8">
                             <a href="/inbox" class="nav-link active border-b-2" style="border-color: var(--color-primary);">
                                 Inbox
                             </a>
@@ -111,16 +111,16 @@
                                 Contacts
                             </a>
                             <a href="/chat" class="nav-link border-b-2 border-transparent">
-                                🤖 Assistant
+                                Assistant
                             </a>
                             <a href="/tasks" class="nav-link border-b-2 border-transparent">
-                                ✓ Tasks
+                                Tasks
                             </a>
                             <a href="/search" class="nav-link border-b-2 border-transparent">
                                 Search
                             </a>
                             <a href="/settings" class="nav-link border-b-2 border-transparent">
-                                ⚙️ Settings
+                                Settings
                             </a>
                         </div>
                     </div>
@@ -147,7 +147,18 @@
                                     </span>
                                 </div>
                                 <div style="max-height: 24rem; overflow-y: auto;">
-                                    <template x-if="notifications.length === 0">
+                                    <template x-if="syncInProgress">
+                                        <div style="display: block; padding: 0.75rem 1rem; border-bottom: 1px solid var(--color-border); background-color: rgba(59, 130, 246, 0.1);">
+                                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                                <svg class="animate-spin h-4 w-4" style="color: var(--color-primary);" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                </svg>
+                                                <span style="font-size: 0.875rem; color: var(--color-body); font-weight: 500;">Syncing contacts...</span>
+                                            </div>
+                                        </div>
+                                    </template>
+                                    <template x-if="notifications.length === 0 && !syncInProgress">
                                         <div style="padding: 1rem; text-align: center; color: var(--color-muted); font-size: 0.875rem;">
                                             No new notifications
                                         </div>
@@ -196,7 +207,7 @@
                 </div>
             </div>
 
-            <div x-show="mobileMenuOpen" x-cloak style="border-top: 1px solid var(--color-border);" id="mobile-menu" class="sm:hidden">
+            <div x-show="mobileMenuOpen" x-cloak style="border-top: 1px solid var(--color-border);" id="mobile-menu" class="md:hidden">
                 <div class="pt-2 pb-3 space-y-1">
                     <a href="/inbox" style="display: block; padding: 0.5rem 1rem; padding-left: 0.75rem; border-left: 4px solid var(--color-primary); font-size: 1rem; font-weight: 500; color: var(--color-primary); background-color: var(--color-primary-subtle);">
                         Inbox
@@ -208,16 +219,16 @@
                         Contacts
                     </a>
                     <a href="/chat" class="nav-link" style="display: block; padding: 0.5rem 1rem; padding-left: 0.75rem; border-left: 4px solid transparent; font-size: 1rem; font-weight: 500;">
-                        🤖 Assistant
+                        Assistant
                     </a>
                     <a href="/tasks" class="nav-link" style="display: block; padding: 0.5rem 1rem; padding-left: 0.75rem; border-left: 4px solid transparent; font-size: 1rem; font-weight: 500;">
-                        ✓ Tasks
+                        Tasks
                     </a>
                     <a href="/search" class="nav-link" style="display: block; padding: 0.5rem 1rem; padding-left: 0.75rem; border-left: 4px solid transparent; font-size: 1rem; font-weight: 500;">
                         Search
                     </a>
                     <a href="/settings" class="nav-link" style="display: block; padding: 0.5rem 1rem; padding-left: 0.75rem; border-left: 4px solid transparent; font-size: 1rem; font-weight: 500;">
-                        ⚙️ Settings
+                        Settings
                     </a>
                 </div>
             </div>
@@ -394,6 +405,7 @@
                 notificationsEnabled: false,
                 notificationsSupported: false,
                 checkInterval: null,
+                syncInProgress: false,
                 
                 init() {
                     this.notificationsSupported = 'Notification' in window;
@@ -402,6 +414,19 @@
                     }
                     this.checkForNew();
                     this.checkInterval = setInterval(() => this.checkForNew(), 30000);
+                    
+                    this.syncInProgress = localStorage.getItem('contactsSyncInProgress') === 'true';
+                    
+                    window.addEventListener('contactsSyncStart', () => {
+                        this.syncInProgress = true;
+                        localStorage.setItem('contactsSyncInProgress', 'true');
+                    });
+                    
+                    window.addEventListener('contactsSyncComplete', (e) => {
+                        this.syncInProgress = false;
+                        localStorage.removeItem('contactsSyncInProgress');
+                        window.showToast(e.detail.success ? 'Contacts synced successfully!' : 'Sync failed', e.detail.success ? 'success' : 'error');
+                    });
                 },
                 
                 togglePanel() {

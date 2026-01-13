@@ -354,12 +354,34 @@
 }
 
 .dark .email-content {
-    filter: invert(1) hue-rotate(180deg);
-    background-color: #0a0a0a;
+    background-color: #1a1a1a;
+    color: #e5e5e5;
 }
 
-.dark .email-content img {
-    filter: invert(1) hue-rotate(180deg);
+.dark .email-content p,
+.dark .email-content div,
+.dark .email-content span {
+    color: #e5e5e5;
+}
+
+.dark .email-content h1,
+.dark .email-content h2,
+.dark .email-content h3,
+.dark .email-content h4,
+.dark .email-content h5,
+.dark .email-content h6 {
+    color: #f5f5f5;
+}
+
+.dark .email-content blockquote {
+    color: #b0b0b0;
+    border-left-color: #404040;
+}
+
+.dark .email-content code,
+.dark .email-content pre {
+    background-color: #2a2a2a;
+    color: #e5e5e5;
 }
 
 .email-content img {

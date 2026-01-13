@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from typing import Optional
 from datetime import datetime, timedelta
 import json
+import logging
 
 from workspace_secretary.web import (
     engine_client as engine,
@@ -12,6 +13,7 @@ from workspace_secretary.web import (
 from workspace_secretary.web.auth import require_auth, Session
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _get_event_date(event: dict) -> str:
@@ -59,6 +61,7 @@ async def calendar_view(
         events_response = await engine.get_calendar_events(time_min, time_max)
         events = events_response.get("events", [])
     except Exception as e:
+        logger.error(f"Failed to fetch calendar events from engine: {e}", exc_info=True)
         events = []
         engine_error = f"Calendar service unavailable: {str(e)}"
 
@@ -71,6 +74,7 @@ async def calendar_view(
             .get("busy", [])
         )
     except Exception as e:
+        logger.error(f"Failed to fetch freebusy data from engine: {e}", exc_info=True)
         busy_slots = []
         if not engine_error:
             engine_error = f"Calendar service unavailable: {str(e)}"
@@ -356,6 +360,38 @@ async def create_event(
             {"success": True, "message": "Event created", "event": result}
         )
     except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@router.post("/calendar/api/create-event")
+async def create_event_simple(
+    summary: str = Form(...),
+    start_date: str = Form(...),
+    start_time: str = Form(...),
+    end_date: str = Form(...),
+    end_time: str = Form(...),
+    description: Optional[str] = Form(None),
+    location: Optional[str] = Form(None),
+    session: Session = Depends(require_auth),
+):
+    try:
+        start_datetime = f"{start_date}T{start_time}:00"
+        end_datetime = f"{end_date}T{end_time}:00"
+
+        result = await engine.create_calendar_event(
+            summary=summary,
+            start_time=start_datetime,
+            end_time=end_datetime,
+            description=description or None,
+            location=location or None,
+            attendees=None,
+            add_meet=False,
+        )
+        return JSONResponse(
+            {"success": True, "message": "Event created", "event": result}
+        )
+    except Exception as e:
+        logger.error(f"Failed to create calendar event: {e}", exc_info=True)
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 

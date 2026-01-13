@@ -89,9 +89,14 @@ async def chat_message_stream(
 
     async def generate():
         try:
-            async for chunk in llm.chat_stream(chat_session, message):
+            stream = llm.chat_stream(chat_session, message)
+            async for chunk in stream:
                 escaped = json.dumps(chunk)
                 yield f"data: {escaped}\n\n"
+            yield "data: [DONE]\n\n"
+        except TypeError as e:
+            logger.error(f"Stream error - LLM may not be configured properly: {e}")
+            yield f"data: {json.dumps({'error': 'LLM not configured or returned invalid stream'})}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
             logger.exception(f"Stream error: {e}")

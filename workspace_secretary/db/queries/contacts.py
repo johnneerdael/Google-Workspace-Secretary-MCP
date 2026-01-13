@@ -166,19 +166,32 @@ def get_contact_interactions(
 def get_frequent_contacts(
     db: DatabaseInterface,
     limit: int = 20,
+    exclude_email: str | None = None,
 ) -> list[dict[str, Any]]:
     """Get most frequently contacted people."""
     with db.connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(
-                """
-                SELECT id, email, display_name, email_count, last_email_date
-                FROM contacts
-                ORDER BY email_count DESC
-                LIMIT %s
-                """,
-                (limit,),
-            )
+            if exclude_email:
+                cur.execute(
+                    """
+                    SELECT id, email, display_name, email_count, last_email_date
+                    FROM contacts
+                    WHERE email != %s
+                    ORDER BY email_count DESC
+                    LIMIT %s
+                    """,
+                    (exclude_email, limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id, email, display_name, email_count, last_email_date
+                    FROM contacts
+                    ORDER BY email_count DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
             return cur.fetchall()
 
 

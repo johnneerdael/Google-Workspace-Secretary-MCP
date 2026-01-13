@@ -173,7 +173,7 @@ async def contacts_page(
     offset = (page - 1) * limit
 
     contacts = get_all_contacts(limit=limit, offset=offset, search=search, sort_by=sort)
-    frequent = get_frequent_contacts(limit=10)
+    frequent = get_frequent_contacts(limit=10, exclude_email=session.email)
     recent = get_recent_contacts(limit=10)
 
     return templates.TemplateResponse(

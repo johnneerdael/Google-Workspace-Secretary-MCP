@@ -5,6 +5,8 @@
 <div class="space-y-4" x-data="{ 
     showEventDetail: false, 
     selectedEvent: null,
+    showCreateEvent: false,
+    newEvent: { summary: '', description: '', start_date: '', start_time: '', end_date: '', end_time: '', location: '' },
     showSettings: false,
     visibleCalendars: ['primary'],
     secondaryTimezone: null,
@@ -12,6 +14,15 @@
     openEventDetail(event) {
         this.selectedEvent = event;
         this.showEventDetail = true;
+    },
+    openCreateEvent() {
+        this.showCreateEvent = true;
+        const now = new Date();
+        this.newEvent.start_date = now.toISOString().split('T')[0];
+        this.newEvent.end_date = now.toISOString().split('T')[0];
+        this.newEvent.start_time = now.toTimeString().slice(0, 5);
+        const endTime = new Date(now.getTime() + 60 * 60 * 1000);
+        this.newEvent.end_time = endTime.toTimeString().slice(0, 5);
     },
     toggleCalendar(calendarId) {
         const index = this.visibleCalendars.indexOf(calendarId);
@@ -24,7 +35,7 @@
     isWorkingHour(hour) {
         return hour >= 11 && hour < 22;
     }
-}">
+}" @open-create-event.window="openCreateEvent()">
     {% if engine_error %}
     <div class="bg-red-900/90 border border-red-700 text-red-100 px-4 py-3 rounded">
         <div class="flex items-center gap-2">
@@ -165,7 +176,7 @@
     </div>
 
     {% if view == 'day' %}
-    <div class="bg-surface rounded-lg overflow-hidden border border-border shadow-sm">
+    <div class="bg-surface rounded-lg overflow-hidden border border-border shadow-sm min-h-[calc(100vh-280px)]">
         <div class="grid grid-cols-[80px_1fr]">
             <div class="border-r border-border"></div>
             <div class="bg-surface-subtle px-4 py-2 border-b border-border">
@@ -320,7 +331,7 @@
     </div>
     
     {% else %}
-    <div class="grid grid-cols-7 gap-2">
+    <div class="grid grid-cols-7 gap-2 min-h-[calc(100vh-280px)]">
         {% for day in days %}
         <div class="card p-3 min-h-[200px] {% if day.is_today %}ring-2 ring-primary{% endif %}">
             <div class="flex items-center justify-between mb-2">
@@ -498,6 +509,101 @@
                         Close
                     </button>
                 </div>
+            </div>
+        </div>
+    </template>
+
+    <template x-if="showCreateEvent">
+        <div class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4" @click.self="showCreateEvent = false">
+            <div class="bg-surface rounded-xl shadow-2xl border border-border w-full max-w-2xl max-h-[90vh] flex flex-col">
+                <div class="flex items-center justify-between px-6 py-4 border-b border-border bg-surface rounded-t-xl">
+                    <h2 class="h2">Create New Event</h2>
+                    <button @click="showCreateEvent = false" class="text-muted hover:text-body p-1 rounded-md hover:bg-surface-subtle">✕</button>
+                </div>
+                
+                <form class="p-6 space-y-4 overflow-y-auto" 
+                      hx-post="/calendar/api/create-event" 
+                      hx-swap="none"
+                      @htmx:after-request="showCreateEvent = false; window.location.reload()">
+                    
+                    <div>
+                        <label class="block text-sm font-medium text-body mb-1">Title *</label>
+                        <input type="text" 
+                               name="summary" 
+                               x-model="newEvent.summary"
+                               required
+                               class="input-field w-full" 
+                               placeholder="Meeting title">
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-body mb-1">Start Date *</label>
+                            <input type="date" 
+                                   name="start_date" 
+                                   x-model="newEvent.start_date"
+                                   required
+                                   class="input-field w-full">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-body mb-1">Start Time *</label>
+                            <input type="time" 
+                                   name="start_time" 
+                                   x-model="newEvent.start_time"
+                                   required
+                                   class="input-field w-full">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-body mb-1">End Date *</label>
+                            <input type="date" 
+                                   name="end_date" 
+                                   x-model="newEvent.end_date"
+                                   required
+                                   class="input-field w-full">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-body mb-1">End Time *</label>
+                            <input type="time" 
+                                   name="end_time" 
+                                   x-model="newEvent.end_time"
+                                   required
+                                   class="input-field w-full">
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-body mb-1">Location</label>
+                        <input type="text" 
+                               name="location" 
+                               x-model="newEvent.location"
+                               class="input-field w-full" 
+                               placeholder="Meeting room or video call link">
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-body mb-1">Description</label>
+                        <textarea name="description" 
+                                  x-model="newEvent.description"
+                                  rows="4" 
+                                  class="input-field w-full" 
+                                  placeholder="Add event details..."></textarea>
+                    </div>
+
+                    <div class="flex justify-end gap-2 pt-4 border-t border-border">
+                        <button type="button" 
+                                @click="showCreateEvent = false"
+                                class="btn-secondary">
+                            Cancel
+                        </button>
+                        <button type="submit" 
+                                class="btn-primary">
+                            Create Event
+                        </button>
+                    </div>
+                </form>
             </div>
         </div>
     </template>

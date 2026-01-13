@@ -11,6 +11,7 @@
     searchQuery: '',
     currentMatch: 0,
     totalMatches: 0,
+    isRead: {{ 'false' if is_unread else 'true' }},
     searchInThread() {
         this.clearHighlights();
         if (!this.searchQuery.trim()) return;
@@ -135,7 +136,8 @@
                         title="Toggle star">
                     {% if is_starred %}★{% else %}☆{% endif %}
                 </button>
-                <button hx-post="/api/email/toggle-read/{{ folder }}/{{ uid }}" 
+                <button @click="isRead = !isRead" 
+                        :hx-post="`/api/email/toggle-read/{{ folder }}/{{ uid }}?mark_unread=${!isRead}`"
                         hx-swap="none"
                         class="btn-icon" 
                         title="Toggle read/unread">

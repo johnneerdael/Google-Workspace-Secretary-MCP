@@ -201,6 +201,7 @@ async def thread_view(
             folder=folder,
             uid=uid,
             is_starred=is_starred,
+            is_unread=email.get("is_unread", False),
             load_images=load_images,
             neighbors=neighbors,
             unread_only=unread_only,
