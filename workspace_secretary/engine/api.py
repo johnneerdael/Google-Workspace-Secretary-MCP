@@ -12,12 +12,13 @@ from email.message import EmailMessage
 from email.utils import parseaddr, make_msgid
 
 import idna
+import imapclient
 from pathlib import Path
 from queue import Queue, Empty
 from typing import Any, Optional, TYPE_CHECKING, cast
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import io
@@ -113,6 +114,12 @@ class CalendarEventRequest(BaseModel):
     calendar_id: str = "primary"
     meeting_type: Optional[str] = None
     attendees: Optional[list[str]] = None
+
+
+class FreeBusyRequest(BaseModel):
+    time_min: str
+    time_max: str
+    calendar_ids: Optional[list[str]] = None
 
 
 class MeetingResponseRequest(BaseModel):
@@ -1175,13 +1182,12 @@ async def trigger_enroll():
         logger.info("Enrollment triggered successfully, starting sync loop")
         state.sync_task = asyncio.create_task(sync_loop())
         return {"status": "ok", "message": "Enrollment successful", "enrolled": True}
-    else:
-        state.enrollment_task = asyncio.create_task(enrollment_watch_loop())
-        return {
-            "status": "pending",
-            "message": state.enrollment_error or "Enrollment failed",
-            "enrolled": False,
-        }
+
+    state.enrollment_task = asyncio.create_task(enrollment_watch_loop())
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=state.enrollment_error or "Enrollment failed",
+    )
 
 
 # ============================================================================
@@ -1192,19 +1198,26 @@ async def trigger_enroll():
 @app.post("/api/sync/trigger")
 async def trigger_sync():
     if not state.enrolled:
-        return {
-            "status": "no_account",
-            "message": "No account configured. Run auth_setup to add an account.",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
 
     if not state.database or not state.imap_client:
-        return {"status": "error", "message": "Engine not ready"}
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Engine not ready",
+        )
 
     try:
         await sync_emails_parallel()
         return {"status": "ok", "message": "Sync triggered"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    except Exception:
+        logger.exception("Sync trigger failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to trigger sync",
+        )
 
 
 # ============================================================================
@@ -1215,76 +1228,122 @@ async def trigger_sync():
 @app.post("/api/email/move")
 async def move_email(req: EmailMoveRequest):
     if not state.enrolled:
-        return {
-            "status": "no_account",
-            "message": "No account configured. Run auth_setup to add an account.",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
 
     if not state.imap_client:
-        return {"status": "error", "message": "IMAP not connected"}
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="IMAP not connected",
+        )
 
     try:
         state.imap_client.move_email(req.uid, req.folder, req.destination)
-        # Update database
         if state.database:
-            # Delete from old location, will be re-synced in new location
             state.database.delete_email(req.uid, req.folder)
         await debounced_sync()
         return {"status": "ok"}
+    except HTTPException:
+        raise
+    except imapclient.IMAPClient.Error as e:  # type: ignore[attr-defined]
+        logger.error(f"IMAP move error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"IMAP move failed: {e}",
+        )
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        logger.exception("Unexpected move_email error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to move email",
+        )
 
 
 @app.post("/api/email/mark-read")
 async def mark_read(req: EmailMarkRequest):
     if not state.enrolled:
-        return {
-            "status": "no_account",
-            "message": "No account configured. Run auth_setup to add an account.",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
 
     if not state.imap_client:
-        return {"status": "error", "message": "IMAP not connected"}
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="IMAP not connected",
+        )
 
     try:
         state.imap_client.mark_email(req.uid, req.folder, "read")
         if state.database:
             state.database.mark_email_read(req.uid, req.folder, True)
         return {"status": "ok"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    except HTTPException:
+        raise
+    except imapclient.IMAPClient.Error as e:  # type: ignore[attr-defined]
+        logger.error(f"IMAP mark-read error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"IMAP mark-read failed: {e}",
+        )
+    except Exception:
+        logger.exception("Unexpected mark_read error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to mark email as read",
+        )
 
 
 @app.post("/api/email/mark-unread")
 async def mark_unread(req: EmailMarkRequest):
     if not state.enrolled:
-        return {
-            "status": "no_account",
-            "message": "No account configured. Run auth_setup to add an account.",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
 
     if not state.imap_client:
-        return {"status": "error", "message": "IMAP not connected"}
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="IMAP not connected",
+        )
 
     try:
         state.imap_client.mark_email(req.uid, req.folder, "unread")
         if state.database:
             state.database.mark_email_read(req.uid, req.folder, False)
         return {"status": "ok"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    except HTTPException:
+        raise
+    except imapclient.IMAPClient.Error as e:  # type: ignore[attr-defined]
+        logger.error(f"IMAP mark-unread error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"IMAP mark-unread failed: {e}",
+        )
+    except Exception:
+        logger.exception("Unexpected mark_unread error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to mark email as unread",
+        )
 
 
 @app.post("/api/email/labels")
 async def modify_labels(req: EmailLabelsRequest):
     if not state.enrolled:
-        return {
-            "status": "no_account",
-            "message": "No account configured. Run auth_setup to add an account.",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
 
     if not state.imap_client:
-        return {"status": "error", "message": "IMAP not connected"}
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="IMAP not connected",
+        )
 
     try:
         if req.action == "add":
@@ -1294,30 +1353,49 @@ async def modify_labels(req: EmailLabelsRequest):
         elif req.action == "set":
             state.imap_client.set_gmail_labels(req.uid, req.folder, req.labels)
         else:
-            return {"status": "error", "message": f"Invalid action: {req.action}"}
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid action: {req.action}",
+            )
+
         await debounced_sync()
         return {"status": "ok"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    except HTTPException:
+        raise
+    except imapclient.IMAPClient.Error as e:  # type: ignore[attr-defined]
+        logger.error(f"IMAP label modification error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"IMAP label modification failed: {e}",
+        )
+    except Exception:
+        logger.exception("Unexpected modify_labels error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to modify labels",
+        )
 
 
 @app.post("/api/email/send")
 async def send_email(req: SendEmailRequest):
     """Send an email via SMTP."""
     if not state.enrolled:
-        return {
-            "status": "no_account",
-            "message": "No account configured. Run auth_setup to add an account.",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
 
     if not state.config:
-        return {"status": "error", "message": "Configuration not loaded"}
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Configuration not loaded",
+        )
 
     if not state.config.imap.oauth2:
-        return {
-            "status": "error",
-            "message": "OAuth2 configuration required for SMTP sending",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_412_PRECONDITION_FAILED,
+            detail="OAuth2 configuration required for SMTP sending",
+        )
 
     try:
         message = EmailMessage()
@@ -1348,30 +1426,42 @@ async def send_email(req: SendEmailRequest):
         await debounced_sync()
         return {"status": "ok", "message_id": message_id}
 
-    except Exception as e:
-        logger.error(f"Send email error: {e}")
-        return {"status": "error", "message": str(e)}
+    except Exception:
+        logger.exception("Send email error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send email",
+        )
 
 
 @app.post("/api/email/draft-reply")
 async def create_draft_reply(req: DraftReplyRequest):
     """Create a draft reply to an email."""
     if not state.enrolled:
-        return {
-            "status": "no_account",
-            "message": "No account configured. Run auth_setup to add an account.",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
 
     if not state.database or not state.config:
-        return {"status": "error", "message": "Engine not ready"}
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Engine not ready",
+        )
 
     if not state.imap_client:
-        return {"status": "error", "message": "IMAP client not connected"}
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="IMAP client not connected",
+        )
 
     try:
         original = state.database.get_email_by_uid(req.uid, req.folder)
         if not original:
-            return {"status": "error", "message": "Original email not found"}
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Original email not found",
+            )
 
         reply_to = original.get("reply_to") or original.get("from_addr", "")
         recipients = [reply_to] if reply_to else []
@@ -1416,9 +1506,6 @@ async def create_draft_reply(req: DraftReplyRequest):
             if cc_addrs:
                 message["Cc"] = ", ".join(cc_addrs)
 
-        if not state.imap_client:
-            return {"status": "error", "message": "IMAP client not connected"}
-
         draft_uid = state.imap_client.save_draft_mime(message)
         await debounced_sync()
 
@@ -1430,24 +1517,41 @@ async def create_draft_reply(req: DraftReplyRequest):
             "message_id": message_id,
         }
 
-    except Exception as e:
-        logger.error(f"Create draft error: {e}")
-        return {"status": "error", "message": str(e)}
+    except HTTPException:
+        raise
+    except imapclient.IMAPClient.Error as e:  # type: ignore[attr-defined]
+        logger.error(f"IMAP draft save error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"IMAP save draft failed: {e}",
+        )
+    except Exception:
+        logger.exception("Create draft error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create draft reply",
+        )
 
 
 @app.post("/api/email/setup-labels")
 async def setup_labels(req: SetupLabelsRequest):
     if not state.enrolled:
-        return {
-            "status": "no_account",
-            "message": "No account configured. Run auth_setup to add an account.",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
 
     if not state.config:
-        return {"status": "error", "message": "Configuration not loaded"}
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Configuration not loaded",
+        )
 
     if not state.imap_client:
-        return {"status": "error", "message": "IMAP client not connected"}
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="IMAP client not connected",
+        )
 
     created: list[str] = []
     already_exists: list[str] = []
@@ -1480,9 +1584,20 @@ async def setup_labels(req: SetupLabelsRequest):
             "failed": failed,
         }
 
-    except Exception as e:
-        logger.error(f"Setup labels error: {e}")
-        return {"status": "error", "message": str(e)}
+    except HTTPException:
+        raise
+    except imapclient.IMAPClient.Error as e:  # type: ignore[attr-defined]
+        logger.error(f"Setup labels IMAP error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"IMAP setup labels failed: {e}",
+        )
+    except Exception:
+        logger.exception("Setup labels error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to setup labels",
+        )
 
 
 @app.get("/api/email/{folder}/{uid}/attachment/{filename}")
@@ -1596,13 +1711,16 @@ async def list_calendar_events(
     calendar_id: str = Query("primary", description="Calendar ID"),
 ):
     if not state.enrolled:
-        return {
-            "status": "no_account",
-            "message": "No account configured. Run auth_setup to add an account.",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
 
     if not state.database:
-        return {"status": "error", "message": "Database not initialized"}
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database not initialized",
+        )
 
     try:
         if not time_min:
@@ -1624,45 +1742,71 @@ async def list_calendar_events(
             "metadata": metadata,
         }
 
-    except Exception as e:
-        logger.error(f"List calendar events error: {e}")
-        return {"status": "error", "message": str(e)}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("List calendar events error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to list events",
+        )
 
 
-@app.get("/api/calendar/availability")
+@app.post("/api/calendar/availability")
 async def get_calendar_availability(
-    time_min: str = Query(..., description="Start time (ISO format)"),
-    time_max: str = Query(..., description="End time (ISO format)"),
+    req: FreeBusyRequest,
 ):
-    """Get free/busy information for the user's calendars."""
+    """Get free/busy information for the user's selected calendars."""
+    if not req.calendar_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="calendar_ids is required when calling this endpoint",
+        )
     if not state.enrolled:
-        return {
-            "status": "no_account",
-            "message": "No account configured. Run auth_setup to add an account.",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
 
     if not state.calendar_client or not state.calendar_client.service:
-        return {"status": "error", "message": "Calendar not connected"}
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Calendar not connected",
+        )
+
+    calendar_ids = req.calendar_ids
+    if not calendar_ids and state.database:
+        calendar_ids = _get_selected_calendar_ids(state.database)
 
     try:
-        availability = state.calendar_client.get_availability(time_min, time_max)
+        availability = state.calendar_client.get_availability(
+            req.time_min, req.time_max, calendar_ids
+        )
         return {"status": "ok", "availability": availability}
 
-    except Exception as e:
-        logger.error(f"Get availability error: {e}")
-        return {"status": "error", "message": str(e)}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Get availability error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch availability",
+        )
 
 
 @app.post("/api/calendar/event")
 async def create_calendar_event(req: CalendarEventRequest):
     if not state.enrolled:
-        return {
-            "status": "no_account",
-            "message": "No account configured. Run auth_setup to add an account.",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
 
     if not state.database:
-        return {"status": "error", "message": "Database not initialized"}
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database not initialized",
+        )
 
     event_data: dict[str, Any] = {
         "summary": req.summary,
@@ -1676,11 +1820,9 @@ async def create_calendar_event(req: CalendarEventRequest):
     if req.attendees:
         event_data["attendees"] = [{"email": email} for email in req.attendees]
 
-    conference_version = 0
     if req.meeting_type == "google_meet":
         import uuid as uuid_lib
 
-        conference_version = 1
         event_data["conferenceData"] = {
             "createRequest": {
                 "requestId": str(uuid_lib.uuid4()),
@@ -1720,21 +1862,29 @@ async def create_calendar_event(req: CalendarEventRequest):
             "outbox_id": outbox_id,
             "pending": True,
         }
-    except Exception as e:
-        logger.error(f"Create calendar event error: {e}")
-        return {"status": "error", "message": str(e)}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Create calendar event error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to queue calendar event",
+        )
 
 
 @app.post("/api/calendar/respond")
 async def respond_to_meeting(req: MeetingResponseRequest):
     if not state.enrolled:
-        return {
-            "status": "no_account",
-            "message": "No account configured. Run auth_setup to add an account.",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
 
     if not state.calendar_client or not state.calendar_client.service:
-        return {"status": "error", "message": "Calendar not connected"}
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Calendar not connected",
+        )
 
     try:
         event = (
@@ -1745,7 +1895,10 @@ async def respond_to_meeting(req: MeetingResponseRequest):
 
         user_email = state.config.imap.username if state.config else None
         if not user_email:
-            return {"status": "error", "message": "User email not configured"}
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="User email not configured",
+            )
 
         attendees = event.get("attendees", [])
         for attendee in attendees:
@@ -1764,20 +1917,29 @@ async def respond_to_meeting(req: MeetingResponseRequest):
         )
 
         return {"status": "ok", "event": updated}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Respond to meeting error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to respond to meeting",
+        )
 
 
 @app.get("/api/calendar/list")
 async def list_calendars():
     if not state.enrolled:
-        return {
-            "status": "no_account",
-            "message": "No account configured. Run auth_setup to add an account.",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
 
     if not state.calendar_client or not state.calendar_client.service:
-        return {"status": "error", "message": "Calendar not connected"}
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Calendar not connected",
+        )
 
     try:
         calendars = state.calendar_client.list_calendars()
@@ -1788,44 +1950,68 @@ async def list_calendars():
                 cal["selected"] = cal.get("id") in selected_ids
 
         return {"status": "ok", "calendars": calendars}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("List calendars error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to list calendars",
+        )
 
 
 @app.get("/api/calendar/{calendar_id}")
 async def get_calendar(calendar_id: str):
     if not state.enrolled:
-        return {
-            "status": "no_account",
-            "message": "No account configured. Run auth_setup to add an account.",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
 
     if not state.calendar_client or not state.calendar_client.service:
-        return {"status": "error", "message": "Calendar not connected"}
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Calendar not connected",
+        )
 
     try:
         calendar = state.calendar_client.get_calendar(calendar_id)
         return {"status": "ok", "calendar": calendar}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Get calendar error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch calendar",
+        )
 
 
 @app.get("/api/calendar/{calendar_id}/events/{event_id}")
 async def get_calendar_event(calendar_id: str, event_id: str):
     if not state.enrolled:
-        return {
-            "status": "no_account",
-            "message": "No account configured. Run auth_setup to add an account.",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
 
     if not state.calendar_client or not state.calendar_client.service:
-        return {"status": "error", "message": "Calendar not connected"}
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Calendar not connected",
+        )
 
     try:
         event = state.calendar_client.get_event(calendar_id, event_id)
         return {"status": "ok", "event": event}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Get calendar event error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch calendar event",
+        )
 
 
 class CalendarEventUpdateRequest(BaseModel):
@@ -1842,19 +2028,22 @@ async def update_calendar_event(
     calendar_id: str, event_id: str, req: CalendarEventUpdateRequest
 ):
     if not state.enrolled:
-        return {
-            "status": "no_account",
-            "message": "No account configured. Run auth_setup to add an account.",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
 
     if not state.database:
-        return {"status": "error", "message": "Database not initialized"}
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database not initialized",
+        )
 
     if event_id.startswith("local:"):
-        return {
-            "status": "error",
-            "message": "Cannot update event that has not been synced yet",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot update event that has not been synced yet",
+        )
 
     event_data: dict[str, Any] = {}
     if req.summary is not None:
@@ -1910,21 +2099,29 @@ async def update_calendar_event(
             )
 
         return {"status": "queued", "outbox_id": outbox_id, "pending": True}
-    except Exception as e:
-        logger.error(f"Update calendar event error: {e}")
-        return {"status": "error", "message": str(e)}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Update calendar event error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to queue calendar event update",
+        )
 
 
 @app.delete("/api/calendar/{calendar_id}/events/{event_id}")
 async def delete_calendar_event(calendar_id: str, event_id: str):
     if not state.enrolled:
-        return {
-            "status": "no_account",
-            "message": "No account configured. Run auth_setup to add an account.",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
 
     if not state.database:
-        return {"status": "error", "message": "Database not initialized"}
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database not initialized",
+        )
 
     try:
         outbox_id = state.database.enqueue_calendar_outbox(
@@ -1975,9 +2172,14 @@ async def delete_calendar_event(calendar_id: str, event_id: str):
             )
 
         return {"status": "queued", "outbox_id": outbox_id, "pending": True}
-    except Exception as e:
-        logger.error(f"Delete calendar event error: {e}")
-        return {"status": "error", "message": str(e)}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Delete calendar event error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to queue calendar event deletion",
+        )
 
 
 class FreeBusyRequest(BaseModel):
@@ -1988,22 +2190,37 @@ class FreeBusyRequest(BaseModel):
 
 @app.post("/api/calendar/freebusy")
 async def freebusy_query(req: FreeBusyRequest):
+    if not req.calendar_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="calendar_ids is required when calling this endpoint",
+        )
+
     if not state.enrolled:
-        return {
-            "status": "no_account",
-            "message": "No account configured. Run auth_setup to add an account.",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
 
     if not state.calendar_client or not state.calendar_client.service:
-        return {"status": "error", "message": "Calendar not connected"}
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Calendar not connected",
+        )
 
     try:
         result = state.calendar_client.freebusy_query(
             req.time_min, req.time_max, req.calendar_ids
         )
         return {"status": "ok", "freebusy": result}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Freebusy query error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to query free/busy",
+        )
 
 
 def run_engine():
@@ -2052,26 +2269,68 @@ class EmailDeleteRequest(BaseModel):
 
 @app.post("/api/internal/email/delete")
 async def internal_delete_email(req: EmailDeleteRequest):
-    if not state.enrolled or not state.imap_client:
-        return {"status": "error", "message": "Not enrolled"}
+    if not state.enrolled:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
+
+    if not state.imap_client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="IMAP not connected",
+        )
 
     try:
         state.imap_client.move_email(req.uid, req.folder, "[Gmail]/Trash")
         return {"status": "ok", "message": f"Email {req.uid} moved to Trash"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    except HTTPException:
+        raise
+    except imapclient.IMAPClient.Error as e:  # type: ignore[attr-defined]
+        logger.error(f"IMAP delete error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"IMAP delete failed: {e}",
+        )
+    except Exception:
+        logger.exception("Unexpected internal_delete_email error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete email",
+        )
 
 
 @app.get("/api/internal/folders")
 async def internal_list_folders():
-    if not state.enrolled or not state.imap_client:
-        return {"status": "error", "folders": []}
+    if not state.enrolled:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
+
+    if not state.imap_client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="IMAP not connected",
+        )
 
     try:
         folders = state.imap_client.list_folders()
         return {"status": "ok", "folders": folders}
-    except Exception as e:
-        return {"status": "error", "message": str(e), "folders": []}
+    except HTTPException:
+        raise
+    except imapclient.IMAPClient.Error as e:  # type: ignore[attr-defined]
+        logger.error(f"IMAP list folders error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"IMAP list folders failed: {e}",
+        )
+    except Exception:
+        logger.exception("Unexpected internal_list_folders error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to list folders",
+        )
 
 
 @app.get("/api/internal/labels")

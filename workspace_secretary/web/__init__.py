@@ -184,4 +184,4 @@ async def favicon():
 
 @web_app.get("/health")
 async def health():
-    return {"status": "ok", "service": "secretary-web"}
+    return {"service": "secretary-web", "healthy": True}

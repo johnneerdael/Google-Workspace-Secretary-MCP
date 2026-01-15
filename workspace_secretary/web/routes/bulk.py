@@ -18,9 +18,7 @@ async def bulk_mark_read(request: Request, session: Session = Depends(require_au
     uids: List[dict] = data.get("emails", [])
 
     if not uids:
-        return JSONResponse(
-            {"status": "error", "message": "No emails selected"}, status_code=400
-        )
+        raise HTTPException(status_code=400, detail="No emails selected")
 
     success_count = 0
     for email in uids:
@@ -28,11 +26,15 @@ async def bulk_mark_read(request: Request, session: Session = Depends(require_au
             await engine_client.mark_read(int(email["uid"]), email["folder"])
             success_count += 1
         except Exception:
-            pass
+            logger.exception(
+                "Failed to mark email uid=%s in folder=%s as read",
+                email.get("uid"),
+                email.get("folder"),
+            )
 
     return JSONResponse(
         {
-            "status": "success",
+            "success": True,
             "message": f"Marked {success_count} emails as read",
             "count": success_count,
         }
@@ -45,9 +47,7 @@ async def bulk_mark_unread(request: Request, session: Session = Depends(require_
     uids: List[dict] = data.get("emails", [])
 
     if not uids:
-        return JSONResponse(
-            {"status": "error", "message": "No emails selected"}, status_code=400
-        )
+        raise HTTPException(status_code=400, detail="No emails selected")
 
     success_count = 0
     for email in uids:
@@ -55,11 +55,15 @@ async def bulk_mark_unread(request: Request, session: Session = Depends(require_
             await engine_client.mark_unread(int(email["uid"]), email["folder"])
             success_count += 1
         except Exception:
-            pass
+            logger.exception(
+                "Failed to mark email uid=%s in folder=%s as unread",
+                email.get("uid"),
+                email.get("folder"),
+            )
 
     return JSONResponse(
         {
-            "status": "success",
+            "success": True,
             "message": f"Marked {success_count} emails as unread",
             "count": success_count,
         }
@@ -72,9 +76,7 @@ async def bulk_archive(request: Request, session: Session = Depends(require_auth
     uids: List[dict] = data.get("emails", [])
 
     if not uids:
-        return JSONResponse(
-            {"status": "error", "message": "No emails selected"}, status_code=400
-        )
+        raise HTTPException(status_code=400, detail="No emails selected")
 
     success_count = 0
     for email in uids:
@@ -84,11 +86,15 @@ async def bulk_archive(request: Request, session: Session = Depends(require_auth
             )
             success_count += 1
         except Exception:
-            pass
+            logger.exception(
+                "Failed to archive email uid=%s from folder=%s",
+                email.get("uid"),
+                email.get("folder"),
+            )
 
     return JSONResponse(
         {
-            "status": "success",
+            "success": True,
             "message": f"Archived {success_count} emails",
             "count": success_count,
         }
@@ -101,9 +107,7 @@ async def bulk_delete(request: Request, session: Session = Depends(require_auth)
     uids: List[dict] = data.get("emails", [])
 
     if not uids:
-        return JSONResponse(
-            {"status": "error", "message": "No emails selected"}, status_code=400
-        )
+        raise HTTPException(status_code=400, detail="No emails selected")
 
     success_count = 0
     for email in uids:
@@ -113,11 +117,15 @@ async def bulk_delete(request: Request, session: Session = Depends(require_auth)
             )
             success_count += 1
         except Exception:
-            pass
+            logger.exception(
+                "Failed to delete email uid=%s from folder=%s",
+                email.get("uid"),
+                email.get("folder"),
+            )
 
     return JSONResponse(
         {
-            "status": "success",
+            "success": True,
             "message": f"Deleted {success_count} emails",
             "count": success_count,
             "deleted": uids,
@@ -132,13 +140,9 @@ async def bulk_move(request: Request, session: Session = Depends(require_auth)):
     destination = data.get("destination", "")
 
     if not uids:
-        return JSONResponse(
-            {"status": "error", "message": "No emails selected"}, status_code=400
-        )
+        raise HTTPException(status_code=400, detail="No emails selected")
     if not destination:
-        return JSONResponse(
-            {"status": "error", "message": "No destination folder"}, status_code=400
-        )
+        raise HTTPException(status_code=400, detail="No destination folder")
 
     success_count = 0
     for email in uids:
@@ -148,11 +152,16 @@ async def bulk_move(request: Request, session: Session = Depends(require_auth)):
             )
             success_count += 1
         except Exception:
-            pass
+            logger.exception(
+                "Failed to move email uid=%s from folder=%s to %s",
+                email.get("uid"),
+                email.get("folder"),
+                destination,
+            )
 
     return JSONResponse(
         {
-            "status": "success",
+            "success": True,
             "message": f"Moved {success_count} emails to {destination}",
             "count": success_count,
         }
@@ -166,9 +175,7 @@ async def toggle_star(folder: str, uid: int, session: Session = Depends(require_
     try:
         email = db.get_email(uid, folder)
         if not email:
-            return JSONResponse(
-                {"success": False, "error": "Email not found"}, status_code=404
-            )
+            raise HTTPException(status_code=404, detail="Email not found")
 
         labels = email.get("gmail_labels", [])
         if isinstance(labels, str):
@@ -199,13 +206,9 @@ async def bulk_label(request: Request, session: Session = Depends(require_auth))
     label = data.get("label", "")
 
     if not uids:
-        return JSONResponse(
-            {"status": "error", "message": "No emails selected"}, status_code=400
-        )
+        raise HTTPException(status_code=400, detail="No emails selected")
     if not label:
-        return JSONResponse(
-            {"status": "error", "message": "No label specified"}, status_code=400
-        )
+        raise HTTPException(status_code=400, detail="No label specified")
 
     success_count = 0
     for email in uids:
@@ -215,11 +218,16 @@ async def bulk_label(request: Request, session: Session = Depends(require_auth))
             )
             success_count += 1
         except Exception:
-            pass
+            logger.exception(
+                "Failed to label email uid=%s in folder=%s with %s",
+                email.get("uid"),
+                email.get("folder"),
+                label,
+            )
 
     return JSONResponse(
         {
-            "status": "success",
+            "success": True,
             "message": f"Added label '{label}' to {success_count} emails",
             "count": success_count,
         }

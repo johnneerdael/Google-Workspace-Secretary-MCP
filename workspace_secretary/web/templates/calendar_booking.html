@@ -59,10 +59,42 @@
     }
 }" x-init="loadSlots()">
     <div class="card p-6">
-        <div class="text-center mb-6">
-            <h1 class="text-2xl font-bold mb-2">Book a Meeting</h1>
-            <p class="text-muted">Select a time that works for you</p>
-        </div>
+        <template x-if="{{ 'true' if booking_error else 'false' }}">
+            <div class="text-center space-y-4">
+                <div class="text-6xl">⚠️</div>
+                <h1 class="text-2xl font-bold">{{ booking_error.detail if booking_error else '' }}</h1>
+                <p class="text-muted">
+                    {% if booking_error and booking_error.status == 410 %}
+                    This scheduling link is no longer active. Please contact the host for a new link.
+                    {% else %}
+                    The booking link you followed is invalid. Double-check the URL or contact the host for assistance.
+                    {% endif %}
+                </p>
+            </div>
+        </template>
+
+        <div x-show="!{{ 'true' if booking_error else 'false' }}">
+            <div class="text-center mb-6">
+                {% if host_name %}
+                <p class="text-sm text-muted uppercase tracking-wide">Hosted by {{ host_name }}</p>
+                {% endif %}
+                <h1 class="text-2xl font-bold mb-2">{{ meeting_title or 'Book a Meeting' }}</h1>
+                {% if meeting_description %}
+                <p class="text-muted">{{ meeting_description }}</p>
+                {% else %}
+                <p class="text-muted">Select a time that works for you</p>
+                {% endif %}
+                <div class="mt-4 text-sm text-muted">
+                    {% if booking_link and booking_link.duration_minutes %}
+                    Duration: {{ booking_link.duration_minutes }} minutes
+                    {% else %}
+                    Duration: 30 minutes
+                    {% endif %}
+                    {% if booking_link and booking_link.timezone %}
+                    · Timezone: {{ booking_link.timezone }}
+                    {% endif %}
+                </div>
+            </div>
 
         <div class="flex items-center justify-center mb-8">
             <div class="flex items-center">

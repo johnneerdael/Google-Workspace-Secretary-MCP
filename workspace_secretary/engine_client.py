@@ -12,6 +12,18 @@ SOCKET_PATH = os.environ.get("ENGINE_SOCKET", "/tmp/secretary-engine.sock")
 ENGINE_API_URL = os.environ.get("ENGINE_API_URL")
 
 
+class EngineError(RuntimeError):
+    """Base exception for Engine API failures."""
+
+
+class EngineConnectionError(EngineError):
+    """Raised when the engine cannot be reached."""
+
+
+class EngineResponseError(EngineError):
+    """Raised when the engine responds with an error payload."""
+
+
 class EngineClient:
     def __init__(self, socket_path: str = SOCKET_PATH, api_url: Optional[str] = None):
         self.socket_path = socket_path
@@ -44,15 +56,47 @@ class EngineClient:
         try:
             response = client.request(method, path, **kwargs)
             response.raise_for_status()
-            return response.json()
-        except httpx.ConnectError:
+        except httpx.ConnectError as exc:
             location = self.api_url if self.api_url else f"socket {self.socket_path}"
-            raise ConnectionError(
+            raise EngineConnectionError(
                 f"Cannot connect to engine at {location}. Is secretary-engine running?"
-            )
-        except httpx.HTTPStatusError as e:
-            error_detail = e.response.json().get("detail", str(e))
-            raise RuntimeError(f"Engine error: {error_detail}")
+            ) from exc
+        except (httpx.TimeoutException, httpx.ReadTimeout, httpx.WriteTimeout) as exc:
+            raise EngineConnectionError("Engine request timed out") from exc
+        except httpx.HTTPStatusError as exc:
+            detail = self._extract_error_detail(exc.response)
+            raise EngineResponseError(detail) from exc
+
+        data = self._parse_response_json(response)
+        self._raise_if_legacy_error(data)
+        return data
+
+    @staticmethod
+    def _parse_response_json(response: httpx.Response) -> dict[str, Any]:
+        try:
+            parsed = response.json()
+        except ValueError as exc:
+            raise EngineResponseError(f"Invalid response from engine: {exc}") from exc
+
+        if not isinstance(parsed, dict):
+            raise EngineResponseError("Engine response must be a JSON object")
+        return parsed
+
+    @staticmethod
+    def _raise_if_legacy_error(payload: dict[str, Any]) -> None:
+        if payload.get("status") == "error":
+            detail = payload.get("message") or payload.get("detail") or "Engine error"
+            raise EngineResponseError(detail)
+
+    @staticmethod
+    def _extract_error_detail(response: httpx.Response) -> str:
+        try:
+            payload = response.json()
+            if isinstance(payload, dict):
+                return payload.get("detail") or payload.get("message") or response.text
+        except ValueError:
+            pass
+        return response.text or f"HTTP {response.status_code}"
 
     def get_status(self) -> dict[str, Any]:
         return self._request("GET", "/api/status")
@@ -140,12 +184,16 @@ class EngineClient:
             },
         )
 
-    def get_calendar_availability(self, time_min: str, time_max: str) -> dict[str, Any]:
-        return self._request(
-            "GET",
-            "/api/calendar/availability",
-            params={"time_min": time_min, "time_max": time_max},
-        )
+    def get_calendar_availability(
+        self,
+        time_min: str,
+        time_max: str,
+        calendar_ids: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"time_min": time_min, "time_max": time_max}
+        if calendar_ids:
+            payload["calendar_ids"] = calendar_ids
+        return self._request("POST", "/api/calendar/availability", json=payload)
 
     def list_calendars(self) -> dict[str, Any]:
         return self._request("GET", "/api/calendar/list")
@@ -190,8 +238,11 @@ class EngineClient:
         return self._request("DELETE", f"/api/calendar/{calendar_id}/events/{event_id}")
 
     def freebusy_query(
-        self, time_min: str, time_max: str, calendar_ids: Optional[list[str]] = None
+        self, time_min: str, time_max: str, calendar_ids: list[str]
     ) -> dict[str, Any]:
+        if not calendar_ids:
+            raise ValueError("calendar_ids is required when calling freebusy_query")
+
         return self._request(
             "POST",
             "/api/calendar/freebusy",

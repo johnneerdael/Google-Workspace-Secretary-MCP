@@ -2,7 +2,7 @@
 Web UI database access layer - read-only queries using shared PostgresDatabase.
 """
 
-from typing import Optional
+from typing import Optional, Any
 from contextlib import contextmanager
 import logging
 from psycopg.rows import dict_row
@@ -13,6 +13,7 @@ from workspace_secretary.db.queries import embeddings as emb_q
 from workspace_secretary.db.queries import contacts as contact_q
 from workspace_secretary.db.queries import calendar as calendar_q
 from workspace_secretary.db.queries import preferences as prefs_q
+from workspace_secretary.db.queries import booking_links as booking_q
 
 logger = logging.getLogger(__name__)
 
@@ -242,14 +243,116 @@ def get_user_calendar_preferences(user_id: str = "default") -> dict:
     return prefs.get("calendar", {})
 
 
+def get_calendar_selection_state(user_id: str = "default") -> dict:
+    """Return selected/available calendar IDs along with sync state metadata."""
+    calendar_prefs = get_user_calendar_preferences(user_id)
+    preferred_ids: list[str] = calendar_prefs.get("selected_calendar_ids", []) or []
+
+    states = calendar_q.list_calendar_sync_states(get_db())
+    available_ids = [
+        s["calendar_id"]
+        for s in states
+        if s.get("last_full_sync_at") or s.get("last_incremental_sync_at")
+    ]
+
+    if not available_ids:
+        available_ids = ["primary"]
+
+    selected_ids = [cid for cid in preferred_ids if cid in available_ids]
+    if not selected_ids:
+        selected_ids = available_ids
+
+    return {
+        "selected_ids": selected_ids,
+        "available_ids": available_ids,
+        "states": states,
+    }
+
+
 def get_selected_calendar_ids(user_id: str = "default") -> list[str]:
     """Get list of calendar IDs selected by user. Defaults to all available if none selected."""
-    calendar_prefs = get_user_calendar_preferences(user_id)
-    selected_ids = calendar_prefs.get("selected_calendar_ids", [])
+    return get_calendar_selection_state(user_id)["selected_ids"]
 
-    # If no calendars selected, default to all calendars that have been synced
-    if not selected_ids:
-        states = calendar_q.list_calendar_sync_states(get_db())
-        selected_ids = [s["calendar_id"] for s in states if s.get("last_full_sync_at")]
 
-    return selected_ids if selected_ids else ["primary"]
+def get_user_calendar_events_with_state(
+    user_id: str, time_min: str, time_max: str
+) -> tuple[dict, list[dict]]:
+    """Fetch calendar selection state and corresponding events."""
+    selection_state = get_calendar_selection_state(user_id)
+    events = query_calendar_events(selection_state["selected_ids"], time_min, time_max)
+    return selection_state, events
+
+
+def get_user_calendar_events(
+    user_id: str, time_min: str, time_max: str
+) -> tuple[list[str], list[dict]]:
+    """Convenience helper to fetch selected IDs and their events."""
+    selection_state, events = get_user_calendar_events_with_state(
+        user_id, time_min, time_max
+    )
+    return selection_state["selected_ids"], events
+
+
+def get_user_calendar_event(
+    user_id: str,
+    calendar_id: str,
+    event_id: str,
+) -> Optional[dict]:
+    """Fetch a single event ensuring calendar is authorized for the user."""
+    selection_state = get_calendar_selection_state(user_id)
+    if calendar_id not in selection_state["selected_ids"]:
+        return None
+    return calendar_q.get_calendar_event_cached(get_db(), calendar_id, event_id)
+
+
+# =============================================================================
+# Booking Links
+# =============================================================================
+
+
+def get_booking_link(link_id: str) -> Optional[dict[str, Any]]:
+    """Fetch a booking link definition by ID."""
+    return booking_q.get_booking_link(get_db(), link_id)
+
+
+def list_booking_links_for_user(
+    user_id: str, include_inactive: bool = False
+) -> list[dict[str, Any]]:
+    return booking_q.list_booking_links_for_user(get_db(), user_id, include_inactive)
+
+
+def save_booking_link(
+    link_id: str,
+    user_id: str,
+    calendar_id: str,
+    host_name: Optional[str] = None,
+    meeting_title: Optional[str] = None,
+    meeting_description: Optional[str] = None,
+    timezone: Optional[str] = None,
+    duration_minutes: int = 30,
+    availability_days: int = 14,
+    availability_start_hour: int = 11,
+    availability_end_hour: int = 22,
+    is_active: bool = True,
+    metadata: Optional[dict[str, Any]] = None,
+) -> None:
+    booking_q.upsert_booking_link(
+        get_db(),
+        link_id,
+        user_id,
+        calendar_id,
+        host_name,
+        meeting_title,
+        meeting_description,
+        timezone,
+        duration_minutes,
+        availability_days,
+        availability_start_hour,
+        availability_end_hour,
+        is_active,
+        metadata,
+    )
+
+
+def set_booking_link_status(link_id: str, is_active: bool) -> bool:
+    return booking_q.set_booking_link_status(get_db(), link_id, is_active)

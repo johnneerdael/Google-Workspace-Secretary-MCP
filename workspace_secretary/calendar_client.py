@@ -113,10 +113,20 @@ class CalendarClient:
         logger.info(f"Created event: {event.get('htmlLink')}")
         return event
 
-    def get_availability(self, time_min: str, time_max: str) -> Dict[str, Any]:
+    def get_availability(
+        self,
+        time_min: str,
+        time_max: str,
+        calendar_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         """Check availability using the freebusy endpoint."""
         service = self._ensure_connected()
 
-        body = {"timeMin": time_min, "timeMax": time_max, "items": [{"id": "primary"}]}
+        calendars = calendar_ids or ["primary"]
+        body = {
+            "timeMin": time_min,
+            "timeMax": time_max,
+            "items": [{"id": cal_id} for cal_id in calendars],
+        }
 
         return service.freebusy().query(body=body).execute()

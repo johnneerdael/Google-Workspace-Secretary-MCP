@@ -131,18 +131,31 @@ async def get_labels() -> dict:
 
 
 async def get_calendar_events(
-    time_min: str, time_max: str, calendar_id: str = "primary"
+    time_min: str,
+    time_max: str,
+    calendar_ids: Optional[list[str]] = None,
 ) -> dict:
-    return await _request(
-        "GET",
-        f"/api/calendar/events?time_min={time_min}&time_max={time_max}&calendar_id={calendar_id}",
-    )
+    payload: dict[str, str | list[str]] = {
+        "time_min": time_min,
+        "time_max": time_max,
+    }
+    if calendar_ids:
+        payload["calendar_ids"] = calendar_ids
+    return await _request("POST", "/api/calendar/events/search", payload)
 
 
-async def get_calendar_availability(time_min: str, time_max: str) -> dict:
-    return await _request(
-        "GET", f"/api/calendar/availability?time_min={time_min}&time_max={time_max}"
-    )
+async def get_calendar_availability(
+    time_min: str,
+    time_max: str,
+    calendar_ids: Optional[list[str]] = None,
+) -> dict:
+    payload: dict[str, str | list[str]] = {
+        "time_min": time_min,
+        "time_max": time_max,
+    }
+    if calendar_ids:
+        payload["calendar_ids"] = calendar_ids
+    return await _request("POST", "/api/calendar/availability", payload)
 
 
 async def list_calendars() -> dict:
@@ -175,9 +188,7 @@ async def create_calendar_event(
     return await _request("POST", "/api/calendar/event", payload)
 
 
-async def respond_to_invite(
-    event_id: str, response: str, calendar_id: str = "primary"
-) -> dict:
+async def respond_to_invite(event_id: str, response: str, calendar_id: str) -> dict:
     return await _request(
         "POST",
         "/api/calendar/respond",
@@ -189,10 +200,13 @@ async def get_calendar_event(calendar_id: str, event_id: str) -> dict:
     return await _request("GET", f"/api/calendar/{calendar_id}/events/{event_id}")
 
 
-async def freebusy_query(
-    time_min: str, time_max: str, calendar_ids: Optional[list[str]] = None
-) -> dict:
-    payload: dict[str, str | list[str]] = {"time_min": time_min, "time_max": time_max}
-    if calendar_ids:
-        payload["calendar_ids"] = calendar_ids
+async def freebusy_query(time_min: str, time_max: str, calendar_ids: list[str]) -> dict:
+    if not calendar_ids:
+        raise ValueError("calendar_ids is required when calling freebusy_query")
+
+    payload: dict[str, str | list[str]] = {
+        "time_min": time_min,
+        "time_max": time_max,
+        "calendar_ids": calendar_ids,
+    }
     return await _request("POST", "/api/calendar/freebusy", payload)

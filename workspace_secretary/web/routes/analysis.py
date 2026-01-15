@@ -4,6 +4,8 @@ import re
 import idna
 from email.utils import parseaddr
 
+from workspace_secretary.email_auth import parse_authentication_results
+
 from workspace_secretary.web import database as db
 from workspace_secretary.web import templates, get_template_context
 from workspace_secretary.config import load_config
@@ -22,37 +24,8 @@ def get_config():
 
 
 def _parse_authentication_results(headers: dict) -> dict:
-    raw_values: list[str] = []
-    for k in ["Authentication-Results", "ARC-Authentication-Results", "Received-SPF"]:
-        v = headers.get(k) if isinstance(headers, dict) else None
-        if not v:
-            continue
-        if isinstance(v, list):
-            raw_values.extend([str(x) for x in v if x])
-        else:
-            raw_values.append(str(v))
-
-    combined = "\n".join(raw_values)
-    combined_l = combined.lower()
-
-    def _has_result(prefix: str, value: str) -> bool:
-        return bool(
-            re.search(rf"\b{re.escape(prefix)}\s*=\s*{re.escape(value)}\b", combined_l)
-        )
-
-    spf_pass = _has_result("spf", "pass") or _has_result("spf", "bestguesspass")
-    spf_fail = _has_result("spf", "fail") or _has_result("spf", "softfail")
-    dkim_pass = _has_result("dkim", "pass")
-    dkim_fail = _has_result("dkim", "fail")
-    dmarc_pass = _has_result("dmarc", "pass")
-    dmarc_fail = _has_result("dmarc", "fail")
-
-    return {
-        "auth_results_raw": combined or None,
-        "spf": "pass" if spf_pass else "fail" if spf_fail else "unknown",
-        "dkim": "pass" if dkim_pass else "fail" if dkim_fail else "unknown",
-        "dmarc": "pass" if dmarc_pass else "fail" if dmarc_fail else "unknown",
-    }
+    # Backwards-compatible wrapper around workspace_secretary.email_auth.
+    return parse_authentication_results(headers)
 
 
 def _extract_domain(addr: str) -> str:

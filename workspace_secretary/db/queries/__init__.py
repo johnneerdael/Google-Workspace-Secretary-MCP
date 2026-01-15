@@ -4,5 +4,14 @@ from . import embeddings
 from . import calendar
 from . import preferences
 from . import mutations
+from . import booking_links
 
-__all__ = ["emails", "contacts", "embeddings", "calendar", "preferences", "mutations"]
+__all__ = [
+    "emails",
+    "contacts",
+    "embeddings",
+    "calendar",
+    "preferences",
+    "mutations",
+    "booking_links",
+]

@@ -162,8 +162,9 @@
         
         <form hx-post="/api/email/send" 
               hx-swap="none"
-              hx-on::before-request="sending = true"
-              hx-on::after-request="if(event.detail.successful) { $el.closest('.fixed').remove(); window.showToast('Email sent!', 'success'); } else { sending = false; window.showToast('Failed to send', 'error'); }"
+               hx-on::before-request="sending = true"
+               hx-on::after-request="if(event.detail.successful) { $el.closest('.fixed').remove(); window.showToast({ message: 'Email sent!', type: 'success' }); } else { sending = false; const errorMessage = (() => { try { const payload = JSON.parse(event.detail.xhr?.responseText || '{}'); return payload.error || payload.detail || 'Failed to send'; } catch (_) { return 'Failed to send'; } })(); window.showToast({ message: errorMessage, type: 'error' }); }"
+
               class="flex flex-col flex-1 overflow-hidden">
             
             {% if original_message_id %}
@@ -374,20 +375,21 @@
                                     })
                                         .then(r => r.json())
                                         .then(data => {
-                                            if (data.success) {
-                                                $el.closest('.fixed').remove();
-                                                window.showToast({
-                                                    message: 'Email sent successfully!',
-                                                    type: 'success',
-                                                    duration: 5000
-                                                });
-                                            } else {
-                                                sending = false;
-                                                window.showToast({
-                                                    message: 'Failed to send: ' + data.error,
-                                                    type: 'error'
-                                                });
-                                            }
+                                             if (data.success) {
+                                                 $el.closest('.fixed').remove();
+                                                 window.showToast({
+                                                     message: 'Email sent successfully!',
+                                                     type: 'success',
+                                                     duration: 5000
+                                                 });
+                                             } else {
+                                                 sending = false;
+                                                 window.showToast({
+                                                     message: data.error || data.detail || 'Failed to send',
+                                                     type: 'error'
+                                                 });
+                                             }
+
                                         })
                                         .catch(err => {
                                             sending = false;

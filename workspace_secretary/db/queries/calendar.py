@@ -165,7 +165,7 @@ def query_calendar_events_cached(
         return []
 
     query = """
-        SELECT raw_json, local_status
+        SELECT calendar_id, event_id, raw_json, local_status
         FROM calendar_events_cache
         WHERE calendar_id = ANY(%s)
           AND (
@@ -184,15 +184,51 @@ def query_calendar_events_cached(
             )
             results: list[dict[str, Any]] = []
             for row in cur.fetchall():
-                evt = row[0]
+                calendar_id_value, event_id_value, raw_json, local_status = row
+                evt = raw_json
                 if isinstance(evt, str):
                     try:
                         evt = json.loads(evt)
                     except Exception:
                         continue
-                evt["_local_status"] = row[1]
+                evt.setdefault("id", event_id_value)
+                evt.setdefault("calendarId", calendar_id_value)
+                evt["_local_status"] = local_status
                 results.append(evt)
             return results
+
+
+def get_calendar_event_cached(
+    db: DatabaseInterface,
+    calendar_id: str,
+    event_id: str,
+) -> Optional[dict[str, Any]]:
+    """Fetch a single cached calendar event."""
+    with db.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT calendar_id, event_id, raw_json, local_status
+                FROM calendar_events_cache
+                WHERE calendar_id = %s AND event_id = %s
+                """,
+                (calendar_id, event_id),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+
+            calendar_id_value, event_id_value, raw_json, local_status = row
+            evt = raw_json
+            if isinstance(evt, str):
+                try:
+                    evt = json.loads(evt)
+                except Exception:
+                    return None
+            evt.setdefault("id", event_id_value)
+            evt.setdefault("calendarId", calendar_id_value)
+            evt["_local_status"] = local_status
+            return evt
 
 
 def enqueue_calendar_outbox(

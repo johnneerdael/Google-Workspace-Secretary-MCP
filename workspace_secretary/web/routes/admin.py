@@ -312,4 +312,4 @@ async def activity_log(session: Session = Depends(require_auth)):
                 if entry.get("completed_at"):
                     entry["completed_at"] = entry["completed_at"].isoformat()
 
-            return JSONResponse({"status": "ok", "log": log_entries})
+            return {"log": log_entries}

@@ -26,8 +26,9 @@ def test_save_draft_mime_returns_uid(mock_imap_config):
     assert uid == 67890
     mock_imap.append.assert_called_once()
     called_args = mock_imap.append.call_args[0]
+    called_kwargs = mock_imap.append.call_args.kwargs
     assert called_args[0] == "[Gmail]/Drafts"
-    assert called_args[2] == (r"\\Draft",)
+    assert called_kwargs["flags"] == (r"\Draft",)
 
 
 def test_save_draft_mime_without_appenduid(mock_imap_config):

@@ -22,6 +22,19 @@ def get_config_from_context(ctx: Context) -> Optional[ServerConfig]:
     return ctx_any.request_context.lifespan_context.get("config")
 
 
+def get_client_from_context(ctx: Context) -> Any:
+    """Backwards-compatible helper to retrieve IMAP client from lifespan.
+
+    Some older tests expect this name.
+    """
+
+    ctx_any: Any = ctx
+    client = ctx_any.request_context.lifespan_context.get("imap_client")
+    if not client:
+        raise RuntimeError("IMAP client not available")
+    return client
+
+
 def register_resources(mcp: FastMCP) -> None:
     """Register MCP resources for email access via database."""
 

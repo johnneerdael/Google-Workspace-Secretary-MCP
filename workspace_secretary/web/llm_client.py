@@ -98,6 +98,8 @@ class LLMClient:
         self._engine = None
         self._user_email: Optional[str] = None
         self._user_name: Optional[str] = None
+        self._user_id: str = "default"
+        self._selected_calendar_ids: list[str] = ["primary"]
 
         if config and config.api_format == WebApiFormat.GEMINI:
             if not GEMINI_AVAILABLE:
@@ -106,11 +108,28 @@ class LLMClient:
                 )
             self._gemini_client = genai.Client(api_key=config.api_key)
 
-    def set_context(self, database, engine, user_email: str, user_name: str):
+    def set_context(
+        self,
+        database,
+        engine,
+        user_email: str,
+        user_name: str,
+        user_id: str = "default",
+    ):
         self._database = database
         self._engine = engine
         self._user_email = user_email
         self._user_name = user_name
+        self._user_id = user_id
+        self._selected_calendar_ids = ["primary"]
+        if self._database:
+            try:
+                self._selected_calendar_ids = self._database.get_selected_calendar_ids(
+                    user_id
+                )
+            except Exception:
+                logger.exception("Failed to load selected calendar IDs")
+        self._selected_calendar_ids = self._selected_calendar_ids or ["primary"]
         self._register_tools()
 
     @property
@@ -128,6 +147,16 @@ class LLMClient:
             self._client = None
 
     def _register_tools(self):
+        selected_calendars: list[str] = ["primary"]
+        if self._database:
+            try:
+                selected_calendars = self._database.get_selected_calendar_ids(
+                    self._user_id
+                )
+            except Exception:
+                logger.exception("Failed to load selected calendar IDs")
+                selected_calendars = ["primary"]
+
         self._tools = {
             "list_folders": ToolDefinition(
                 name="list_folders",
@@ -419,40 +448,65 @@ Body:
     async def _tool_list_calendar_events(
         self, days_ahead: int = 7, days_back: int = 0, **kwargs
     ) -> str:
-        if not self._engine:
-            return "Calendar not available"
+        if not self._database:
+            return "Database not available"
 
         now = datetime.now()
         time_min = (now - timedelta(days=days_back)).isoformat() + "Z"
         time_max = (now + timedelta(days=days_ahead)).isoformat() + "Z"
 
         try:
-            events = await self._engine.list_calendar_events(time_min, time_max)
+            selection_state, events = (
+                self._database.get_user_calendar_events_with_state(
+                    self._user_id, time_min, time_max
+                )
+            )
             if not events:
                 return "No events found in the specified time range"
 
-            lines = [f"Calendar events ({len(events)}):"]
+            lines = [
+                f"Calendar events ({len(events)} across {len(selection_state['selected_ids'])} calendars):"
+            ]
             for ev in events:
                 start = ev.get("start", {}).get(
                     "dateTime", ev.get("start", {}).get("date", "?")
                 )
-                lines.append(f"- {start[:16]} | {ev.get('summary', '(no title)')}")
+                cal_id = ev.get("calendarId", "unknown")
+                lines.append(
+                    f"- [{cal_id}] {start[:16]} | {ev.get('summary', '(no title)')}"
+                )
             return "\n".join(lines)
         except Exception as e:
             return f"Error fetching calendar: {e}"
 
-    async def _tool_get_calendar_availability(
-        self, date: Optional[str] = None, **kwargs
-    ) -> str:
+    async def _tool_get_calendar_availability(self, days: int = 1, **kwargs) -> str:
         if not self._engine:
             return "Calendar not available"
 
-        if not date:
-            date = datetime.now().strftime("%Y-%m-%d")
+        now = datetime.now()
+        time_min = now.strftime("%Y-%m-%dT00:00:00Z")
+        time_max = (now + timedelta(days=days)).strftime("%Y-%m-%dT23:59:59Z")
 
         try:
-            availability = await self._engine.get_calendar_availability(date)
-            return f"Availability for {date}:\n{availability}"
+            availability = await self._engine.get_calendar_availability(
+                time_min, time_max, self._selected_calendar_ids
+            )
+            busy_blocks = availability.get("availability", {}).get("calendars", {})
+
+            lines = [
+                f"Availability across {len(self._selected_calendar_ids)} calendars for next {days} day(s):"
+            ]
+            for cal_id in self._selected_calendar_ids:
+                busy_list = busy_blocks.get(cal_id, {}).get("busy", [])
+                if busy_list:
+                    for block in busy_list[:5]:
+                        start = block.get("start", "?")
+                        end = block.get("end", "?")
+                        lines.append(f"- {cal_id} busy {start} → {end}")
+                else:
+                    lines.append(f"- {cal_id}: no busy blocks")
+
+            return "\n".join(lines)
         except Exception as e:
             return f"Error checking availability: {e}"
 
@@ -903,13 +957,13 @@ Subject: Re: {subject}
                 collected_parts: list[Any] = []
                 tool_calls: list[dict] = []
 
-                async for (
-                    chunk
-                ) in self._gemini_client.aio.models.generate_content_stream(
+                stream = await self._gemini_client.aio.models.generate_content_stream(
                     model=self.config.model,
                     contents=contents,
                     config=config,
-                ):
+                )
+
+                async for chunk in stream:
                     if not chunk.candidates:
                         continue
 

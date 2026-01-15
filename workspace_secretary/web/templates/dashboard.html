@@ -81,33 +81,39 @@
                     <h2 class="h2">📅 Today's Schedule</h2>
                     <a href="/calendar" class="link text-sm no-underline">Full calendar →</a>
                 </div>
-                {% if upcoming_events %}
-                <div class="space-y-3">
-                    {% for event in upcoming_events %}
-                    <div class="p-3 bg-surface-subtle rounded-lg border border-border">
-                        <div class="flex items-start justify-between">
-                            <div class="flex-1 min-w-0">
-                                <p class="text-sm font-medium text-body truncate">{{ event.summary }}</p>
-                                {% if event.start.dateTime %}
-                                <p class="text-xs text-muted">
-                                    {{ event.start.dateTime[11:16] }} - {{ event.end.dateTime[11:16] if event.end else '' }}
-                                </p>
-                                {% endif %}
-                            </div>
-                            {% if event.hangoutLink %}
-                            <a href="{{ event.hangoutLink }}" target="_blank"
-                               class="ml-2 px-2 py-1 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors">
-                                Join
-                            </a>
-                            {% endif %}
-                        </div>
-                        {% if event.location %}
-                        <p class="text-xs text-muted mt-1 truncate">📍 {{ event.location }}</p>
-                        {% endif %}
-                    </div>
-                    {% endfor %}
-                </div>
-                {% else %}
+                 {% if upcoming_events %}
+                 <div class="space-y-3">
+                     {% for event in upcoming_events %}
+                     <div class="p-3 bg-surface-subtle rounded-lg border border-border" data-calendar-id="{{ event.calendarId or '' }}">
+                         <div class="flex items-start justify-between">
+                             <div class="flex-1 min-w-0">
+                                 <div class="flex items-center gap-2">
+                                     <p class="text-sm font-medium text-body truncate">{{ event.summary }}</p>
+                                     {% if event.calendarId %}
+                                     <span class="text-[11px] px-1.5 py-0.5 rounded bg-surface text-muted border border-border">{{ event.calendarId }}</span>
+                                     {% endif %}
+                                 </div>
+                                 {% if event.start.dateTime %}
+                                 <p class="text-xs text-muted">
+                                     {{ event.start.dateTime[11:16] }} - {{ event.end.dateTime[11:16] if event.end else '' }}
+                                 </p>
+                                 {% endif %}
+                             </div>
+                             {% if event.hangoutLink %}
+                             <a href="{{ event.hangoutLink }}" target="_blank"
+                                class="ml-2 px-2 py-1 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors">
+                                 Join
+                             </a>
+                             {% endif %}
+                         </div>
+                         {% if event.location %}
+                         <p class="text-xs text-muted mt-1 truncate">📍 {{ event.location }}</p>
+                         {% endif %}
+                     </div>
+                     {% endfor %}
+                 </div>
+                 {% else %}
+
                     {% with icon="☕", title="No more meetings", description="Enjoy your free time!" %}
                         {% include "partials/empty_state.html" %}
                     {% endwith %}

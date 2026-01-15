@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Request, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
+import logging
 
 from workspace_secretary.web import database as db
 from workspace_secretary.web import engine_client as engine
@@ -9,14 +10,10 @@ from workspace_secretary.web.routes.analysis import analyze_signals, compute_pri
 from workspace_secretary.web.auth import require_auth, Session
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
-@router.get("/dashboard")
-async def dashboard_redirect(session: Session = Depends(require_auth)):
-    return RedirectResponse(url="/", status_code=302)
-
-
-@router.get("/", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse, name="dashboard")
 async def dashboard(request: Request, session: Session = Depends(require_auth)):
     unread_emails = db.get_inbox_emails("INBOX", limit=50, offset=0, unread_only=True)
 
@@ -40,34 +37,51 @@ async def dashboard(request: Request, session: Session = Depends(require_auth)):
         reverse=True,
     )[:10]
 
-    now = datetime.now()
-    today_start = now.replace(hour=0, minute=0, second=0).strftime("%Y-%m-%dT%H:%M:%SZ")
-    today_end = now.replace(hour=23, minute=59, second=59).strftime(
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    today_end = now.replace(hour=23, minute=59, second=59, microsecond=0).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
 
-    try:
-        events_response = await engine.get_calendar_events(today_start, today_end)
-        today_events = events_response.get("events", [])
-    except Exception:
-        today_events = []
+    selection_state = {"selected_ids": ["primary"], "available_ids": []}
+    upcoming_events: list[dict] = []
 
-    upcoming_events = []
-    for event in today_events:
-        start = event.get("start", {}).get("dateTime", "")
-        if start:
+    try:
+        selection_state, events = db.get_user_calendar_events_with_state(
+            session.user_id, today_start, today_end
+        )
+        for event in events:
+            event_data = event.copy() if isinstance(event, dict) else dict(event)
+            event_data["calendarId"] = event_data.get("calendarId")
+            start = event_data.get("start", {}).get("dateTime", "")
+            if not start:
+                continue
             try:
                 event_time = datetime.fromisoformat(start.replace("Z", "+00:00"))
-                if event_time.replace(tzinfo=None) >= now:
-                    upcoming_events.append(event)
+                event_time = (
+                    event_time
+                    if event_time.tzinfo
+                    else event_time.replace(tzinfo=timezone.utc)
+                )
+                if event_time >= now:
+                    upcoming_events.append(event_data)
             except ValueError:
-                upcoming_events.append(event)
+                upcoming_events.append(event_data)
+    except Exception as e:
+        logger.error("Failed to load calendar events for dashboard: %s", e)
+
+    meetings_today = len(upcoming_events)
     upcoming_events = upcoming_events[:5]
 
+    unread_count = len(unread_emails)
+    priority_count = len([e for e in priority_emails if e["priority"] == "high"])
+
     stats = {
-        "unread_count": len(unread_emails),
-        "priority_count": len([e for e in priority_emails if e["priority"] == "high"]),
-        "meetings_today": len(today_events),
+        "unread_count": unread_count,
+        "priority_count": priority_count,
+        "meetings_today": meetings_today,
     }
 
     return templates.TemplateResponse(
@@ -77,7 +91,11 @@ async def dashboard(request: Request, session: Session = Depends(require_auth)):
             priority_emails=priority_emails,
             upcoming_events=upcoming_events,
             stats=stats,
+            unread_count=unread_count,
+            priority_count=priority_count,
+            meetings_today=meetings_today,
             now=now,
+            selected_calendar_ids=selection_state.get("selected_ids", []),
         ),
     )
 
@@ -93,15 +111,19 @@ async def get_stats(request: Request, session: Session = Depends(require_auth)):
         if priority == "high":
             high_priority += 1
 
-    now = datetime.now()
-    today_start = now.replace(hour=0, minute=0, second=0).strftime("%Y-%m-%dT%H:%M:%SZ")
-    today_end = now.replace(hour=23, minute=59, second=59).strftime(
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    today_end = now.replace(hour=23, minute=59, second=59, microsecond=0).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
 
     try:
-        events_response = await engine.get_calendar_events(today_start, today_end)
-        meetings_today = len(events_response.get("events", []))
+        selection_state, events = db.get_user_calendar_events_with_state(
+            session.user_id, today_start, today_end
+        )
+        meetings_today = len(events)
     except Exception:
         meetings_today = 0
 

@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Request, Query, Form, Depends, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
-from typing import Optional
+from typing import Optional, Any
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import json
 import logging
 
@@ -20,6 +21,138 @@ logger = logging.getLogger(__name__)
 def _get_event_date(event: dict) -> str:
     start = event.get("start", {})
     return start.get("dateTime", start.get("date", ""))[:10]
+
+
+def _event_calendar_id(event: dict[str, Any]) -> Optional[str]:
+    return (
+        event.get("calendarId") or event.get("calendar_id") or event.get("calendarID")
+    )
+
+
+def _advance_to_next_day(current: datetime, start_hour: int) -> datetime:
+    return (current + timedelta(days=1)).replace(
+        hour=start_hour,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+
+
+def _parse_event_boundary(value: str, target_tz: ZoneInfo) -> Optional[datetime]:
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+        return dt.astimezone(target_tz)
+    except Exception:
+        return None
+
+
+def _get_timezone(tz_name: Optional[str]) -> ZoneInfo:
+    name = tz_name or "UTC"
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        logger.warning("Unknown timezone %s for booking link; defaulting to UTC", name)
+    except Exception:
+        logger.warning("Failed to load timezone %s; defaulting to UTC", name)
+    return ZoneInfo("UTC")
+
+
+def _parse_event_datetime(
+    value: Optional[str], target_tz: ZoneInfo
+) -> Optional[datetime]:
+    if not value:
+        return None
+    normalized = value
+    if "T" not in normalized:
+        normalized = f"{normalized}T00:00:00"
+    normalized = normalized.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=target_tz)
+    return dt.astimezone(target_tz)
+
+
+def _build_busy_windows(
+    events: list[dict[str, Any]], booking_tz: ZoneInfo
+) -> list[tuple[datetime, datetime]]:
+    windows: list[tuple[datetime, datetime]] = []
+    for event in events:
+        start_info = event.get("start") or {}
+        end_info = event.get("end") or {}
+        start_dt = _parse_event_datetime(
+            start_info.get("dateTime") or start_info.get("date"), booking_tz
+        )
+        end_dt = _parse_event_datetime(
+            end_info.get("dateTime") or end_info.get("date"), booking_tz
+        )
+        if not start_dt or not end_dt:
+            continue
+        windows.append((start_dt, end_dt))
+    return windows
+
+
+def _generate_booking_slots(
+    booking_tz: ZoneInfo,
+    busy_windows: list[tuple[datetime, datetime]],
+    start_dt: datetime,
+    end_dt: datetime,
+    duration_minutes: int,
+    start_hour: int,
+    end_hour: int,
+) -> list[dict[str, str]]:
+    slots: list[dict[str, str]] = []
+    current = start_dt.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+    if current < start_dt:
+        current = _advance_to_next_day(current, start_hour)
+
+    while current < end_dt:
+        if current.weekday() < 5:
+            slot_end = current + timedelta(minutes=duration_minutes)
+            day_end = current.replace(hour=end_hour, minute=0, second=0, microsecond=0)
+            if slot_end <= day_end and slot_end.date() == current.date():
+                is_busy = False
+                for busy_start, busy_end in busy_windows:
+                    if not (slot_end <= busy_start or current >= busy_end):
+                        is_busy = True
+                        break
+                if not is_busy and current > start_dt:
+                    slots.append(
+                        {
+                            "start": current.astimezone(ZoneInfo("UTC")).isoformat(),
+                            "end": slot_end.astimezone(ZoneInfo("UTC")).isoformat(),
+                            "display": current.strftime("%A, %B %d at %H:%M"),
+                        }
+                    )
+        current += timedelta(minutes=duration_minutes)
+        if current.hour > end_hour or (current.hour == end_hour and current.minute > 0):
+            current = _advance_to_next_day(current, start_hour)
+    return slots
+
+
+def _get_booking_link_context(
+    link_id: str,
+) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+    """Fetch booking link along with an error descriptor if invalid/inactive."""
+
+    link = db.get_booking_link(link_id)
+    if not link:
+        return None, {"status": 404, "detail": "Booking link not found"}
+    if not link.get("is_active", True):
+        return None, {"status": 410, "detail": "Booking link is inactive"}
+    return link, None
+
+
+def _require_booking_link(link_id: str) -> dict[str, Any]:
+    link, error = _get_booking_link_context(link_id)
+    if error:
+        raise HTTPException(status_code=error["status"], detail=error["detail"])
+    assert link is not None  # For type-checkers
+    return link
 
 
 @router.get("/calendar", response_class=HTMLResponse)
@@ -58,29 +191,85 @@ async def calendar_view(
         time_max = week_end.strftime("%Y-%m-%dT23:59:59Z")
 
     engine_error = None
+    selection_state = {
+        "selected_ids": ["primary"],
+        "available_ids": ["primary"],
+        "states": [],
+    }
+    events: list[dict] = []
+
     try:
-        selected_calendar_ids = db.get_selected_calendar_ids(session.user_id)
-        events = db.query_calendar_events(selected_calendar_ids, time_min, time_max)
+        selection_state, events = db.get_user_calendar_events_with_state(
+            session.user_id, time_min, time_max
+        )
     except Exception as e:
         logger.error(
             f"Failed to fetch calendar events from database: {e}", exc_info=True
         )
-        events = []
         engine_error = f"Calendar service unavailable: {str(e)}"
 
+    busy_slots = []
     try:
-        freebusy_response = await engine.freebusy_query(time_min, time_max)
-        busy_slots = (
-            freebusy_response.get("freebusy", {})
-            .get("calendars", {})
-            .get("primary", {})
-            .get("busy", [])
+        freebusy_response = await engine.freebusy_query(
+            time_min, time_max, selection_state["selected_ids"]
         )
+        busy_by_calendar = (
+            freebusy_response.get("freebusy", {}).get("calendars", {}) or {}
+        )
+        for cid in selection_state["selected_ids"]:
+            busy_slots.extend(busy_by_calendar.get(cid, {}).get("busy", []))
     except Exception as e:
         logger.error(f"Failed to fetch freebusy data from engine: {e}", exc_info=True)
-        busy_slots = []
         if not engine_error:
             engine_error = f"Calendar service unavailable: {str(e)}"
+
+    calendar_options: list[dict] = []
+    try:
+        calendars_response = await engine.list_calendars()
+        if calendars_response.get("status") == "ok":
+            calendar_options = calendars_response.get("calendars", []) or []
+    except Exception as e:
+        logger.warning("Failed to load calendar list: %s", e)
+
+    filtered_options = []
+    available = set(selection_state["available_ids"])
+    for cal in calendar_options:
+        cal_id = cal.get("id") or cal.get("calendarId")
+        if not cal_id:
+            continue
+        status_info = next(
+            (
+                state
+                for state in selection_state["states"]
+                if state.get("calendar_id") == cal_id
+            ),
+            {},
+        )
+        cal_copy = {
+            **cal,
+            "id": cal_id,
+            "selected": cal_id in selection_state["selected_ids"],
+            "sync_status": status_info.get("status"),
+            "last_sync": status_info.get("last_incremental_sync_at")
+            or status_info.get("last_full_sync_at"),
+        }
+        if cal_id in available:
+            filtered_options.append(cal_copy)
+        else:
+            cal_copy["available"] = False
+            filtered_options.append(cal_copy)
+    calendar_options = filtered_options
+
+    if not calendar_options:
+        calendar_options = [
+            {
+                "id": cid,
+                "summary": cid,
+                "selected": cid in selection_state["selected_ids"],
+                "primary": cid == "primary",
+            }
+            for cid in selection_state["available_ids"]
+        ]
 
     context = get_template_context(
         request,
@@ -89,6 +278,12 @@ async def calendar_view(
         busy_slots=busy_slots,
         now=now,
         engine_error=engine_error,
+        calendar_options=calendar_options,
+        selected_calendar_ids=selection_state["selected_ids"],
+        available_calendar_ids=selection_state["available_ids"],
+        calendar_sync_states=selection_state["states"],
+        calendar_options_json=json.dumps(calendar_options),
+        selected_calendar_ids_json=json.dumps(selection_state["selected_ids"]),
     )
 
     if view == "day":
@@ -211,16 +406,17 @@ async def find_time_slots(
         time_min = start_dt.strftime("%Y-%m-%dT00:00:00Z")
         time_max = end_dt.strftime("%Y-%m-%dT23:59:59Z")
 
-        my_events = await engine.get_calendar_events(time_min, time_max)
-        my_busy = my_events.get("events", [])
-
-        freebusy_response = await engine.freebusy_query(time_min, time_max)
-        busy_slots = (
-            freebusy_response.get("freebusy", {})
-            .get("calendars", {})
-            .get("primary", {})
-            .get("busy", [])
+        selection_state, my_busy = db.get_user_calendar_events_with_state(
+            session.user_id, time_min, time_max
         )
+
+        freebusy_response = await engine.freebusy_query(
+            time_min, time_max, selection_state["selected_ids"]
+        )
+        busy_slots = []
+        calendars_busy = freebusy_response.get("freebusy", {}).get("calendars", {})
+        for cid in selection_state["selected_ids"]:
+            busy_slots.extend(calendars_busy.get(cid, {}).get("busy", []))
 
         slots = []
         current = start_dt.replace(hour=11, minute=0, second=0, microsecond=0)
@@ -317,13 +513,16 @@ async def availability_widget(
     time_max = (now + timedelta(days=days)).strftime("%Y-%m-%dT23:59:59Z")
 
     try:
-        freebusy_response = await engine.freebusy_query(time_min, time_max)
-        busy_slots = (
-            freebusy_response.get("freebusy", {})
-            .get("calendars", {})
-            .get("primary", {})
-            .get("busy", [])
+        selection_state, _ = db.get_user_calendar_events_with_state(
+            session.user_id, time_min, time_max
         )
+        freebusy_response = await engine.freebusy_query(
+            time_min, time_max, selection_state["selected_ids"]
+        )
+        busy_slots = []
+        calendars_busy = freebusy_response.get("freebusy", {}).get("calendars", {})
+        for cid in selection_state["selected_ids"]:
+            busy_slots.extend(calendars_busy.get(cid, {}).get("busy", []))
     except Exception:
         busy_slots = []
 
@@ -337,6 +536,18 @@ async def availability_widget(
     )
 
 
+@router.get("/api/calendar/event/{calendar_id}/{event_id}")
+async def get_calendar_event_detail(
+    calendar_id: str,
+    event_id: str,
+    session: Session = Depends(require_auth),
+):
+    event = db.get_user_calendar_event(session.user_id, calendar_id, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    return JSONResponse({"success": True, "event": event})
+
+
 @router.post("/api/calendar/event")
 async def create_event(
     summary: str = Form(...),
@@ -346,10 +557,14 @@ async def create_event(
     location: Optional[str] = Form(None),
     attendees: Optional[str] = Form(None),
     add_meet: bool = Form(False),
+    calendar_id: Optional[str] = Form(None),
     session: Session = Depends(require_auth),
 ):
     try:
         attendee_list = [a.strip() for a in attendees.split(",")] if attendees else None
+        target_calendar_id = (
+            calendar_id or db.get_selected_calendar_ids(session.user_id)[0]
+        )
         result = await engine.create_calendar_event(
             summary=summary,
             start_time=start_time,
@@ -358,6 +573,7 @@ async def create_event(
             location=location or None,
             attendees=attendee_list,
             add_meet=add_meet,
+            calendar_id=target_calendar_id,
         )
         return JSONResponse(
             {"success": True, "message": "Event created", "event": result}
@@ -402,6 +618,7 @@ async def create_event_simple(
 async def respond_to_event(
     event_id: str,
     response: str = Query(...),
+    calendar_id: Optional[str] = Query(None),
     session: Session = Depends(require_auth),
 ):
     if response not in ("accepted", "declined", "tentative"):
@@ -410,7 +627,10 @@ async def respond_to_event(
         )
 
     try:
-        result = await engine.respond_to_invite(event_id, response)
+        target_calendar_id = (
+            calendar_id or db.get_selected_calendar_ids(session.user_id)[0]
+        )
+        result = await engine.respond_to_invite(event_id, response, target_calendar_id)
         if result.get("status") == "error":
             return JSONResponse(
                 {"success": False, "error": result.get("message", "Unknown error")},
@@ -431,12 +651,18 @@ async def public_booking_page(
     request: Request,
     link_id: str,
 ):
+    link, error = _get_booking_link_context(link_id)
+    context = {
+        "link_id": link_id,
+        "booking_link": link,
+        "host_name": link.get("host_name") if link else None,
+        "meeting_title": link.get("meeting_title") if link else None,
+        "meeting_description": link.get("meeting_description") if link else None,
+        "booking_error": error,
+    }
     return templates.TemplateResponse(
         "calendar_booking.html",
-        get_template_context(
-            request,
-            link_id=link_id,
-        ),
+        get_template_context(request, **context),
     )
 
 
@@ -445,62 +671,150 @@ async def get_booking_slots(
     link_id: str = Query(...),
 ):
     try:
-        now = datetime.now()
+        link = _require_booking_link(link_id)
+        booking_tz = _get_timezone(link.get("timezone") or "UTC")
+
+        now = datetime.now(booking_tz)
         start_dt = now
-        end_dt = now + timedelta(days=14)
+        window_days = max(1, int(link.get("availability_days", 14)))
+        end_dt = now + timedelta(days=window_days)
 
-        time_min = start_dt.strftime("%Y-%m-%dT00:00:00Z")
-        time_max = end_dt.strftime("%Y-%m-%dT23:59:59Z")
+        calendar_id = link["calendar_id"]
+        user_id = link["user_id"]
+        time_min = start_dt.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ")
+        time_max = end_dt.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        events_response = await engine.get_calendar_events(time_min, time_max)
-        busy_events = events_response.get("events", [])
+        selected_ids, busy_events = db.get_user_calendar_events(
+            user_id, time_min, time_max
+        )
+        busy_events = [
+            evt for evt in busy_events if evt.get("calendarId") in {calendar_id}
+        ]
+
+        duration = max(15, int(link.get("duration_minutes", 30)))
+        start_hour = max(0, min(23, int(link.get("availability_start_hour", 11))))
+        end_hour = max(
+            start_hour + 1, min(24, int(link.get("availability_end_hour", 22)))
+        )
 
         slots = []
-        current = start_dt.replace(hour=11, minute=0, second=0, microsecond=0)
+        current = start_dt.replace(hour=start_hour, minute=0, second=0, microsecond=0)
         if current < start_dt:
             current += timedelta(days=1)
 
         while current < end_dt:
             if current.weekday() < 5:
-                slot_end = current + timedelta(minutes=30)
+                slot_end = current + timedelta(minutes=duration)
+                if slot_end.hour > end_hour or slot_end.date() != current.date():
+                    current = (current + timedelta(days=1)).replace(
+                        hour=start_hour, minute=0
+                    )
+                    continue
 
-                if current.hour >= 11 and slot_end.hour <= 22:
-                    is_busy = False
-                    for event in busy_events:
-                        event_start = event.get("start", {}).get("dateTime", "")
-                        event_end = event.get("end", {}).get("dateTime", "")
-                        if event_start and event_end:
-                            evt_start = datetime.fromisoformat(
-                                event_start.replace("Z", "+00:00")
-                            )
-                            evt_end = datetime.fromisoformat(
-                                event_end.replace("Z", "+00:00")
-                            )
+                is_busy = False
+                for event in busy_events:
+                    event_start = event.get("start", {}).get("dateTime")
+                    event_end = event.get("end", {}).get("dateTime")
+                    if not event_start or not event_end:
+                        continue
+                    evt_start = datetime.fromisoformat(
+                        event_start.replace("Z", "+00:00")
+                    )
+                    evt_end = datetime.fromisoformat(event_end.replace("Z", "+00:00"))
+                    evt_start = evt_start.astimezone(booking_tz)
+                    evt_end = evt_end.astimezone(booking_tz)
 
-                            if not (slot_end <= evt_start or current >= evt_end):
-                                is_busy = True
-                                break
+                    if not (slot_end <= evt_start or current >= evt_end):
+                        is_busy = True
+                        break
 
-                    if not is_busy and current > now:
-                        slots.append(
-                            {
-                                "start": current.isoformat(),
-                                "end": slot_end.isoformat(),
-                                "display": f"{current.strftime('%A, %B %d at %H:%M')}",
-                            }
-                        )
+                if not is_busy and current > now:
+                    slots.append(
+                        {
+                            "start": current.astimezone(ZoneInfo("UTC")).isoformat(),
+                            "end": slot_end.astimezone(ZoneInfo("UTC")).isoformat(),
+                            "display": current.strftime("%A, %B %d at %H:%M"),
+                        }
+                    )
 
-            current += timedelta(minutes=30)
-            if current.hour >= 22:
-                current = (current + timedelta(days=1)).replace(hour=11, minute=0)
+            current += timedelta(minutes=duration)
+            if current.hour >= end_hour:
+                current = (current + timedelta(days=1)).replace(
+                    hour=start_hour, minute=0
+                )
+
+        if calendar_id not in selected_ids:
+            busy_events = [
+                evt for evt in busy_events if evt.get("calendarId") == calendar_id
+            ]
+
+        duration = max(15, int(link.get("duration_minutes", 30)))
+        start_hour = max(0, min(23, int(link.get("availability_start_hour", 11))))
+        end_hour = max(
+            start_hour + 1, min(24, int(link.get("availability_end_hour", 22)))
+        )
+
+        slots = []
+        current = start_dt.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+        if current < start_dt:
+            current += timedelta(days=1)
+
+        while current < end_dt:
+            if current.weekday() < 5:
+                slot_end = current + timedelta(minutes=duration)
+                if slot_end.hour > end_hour or slot_end.date() != current.date():
+                    current = (current + timedelta(days=1)).replace(
+                        hour=start_hour, minute=0
+                    )
+                    continue
+
+                is_busy = False
+                for event in busy_events:
+                    event_start = event.get("start", {}).get("dateTime")
+                    event_end = event.get("end", {}).get("dateTime")
+                    if not event_start or not event_end:
+                        continue
+                    evt_start = datetime.fromisoformat(
+                        event_start.replace("Z", "+00:00")
+                    )
+                    evt_end = datetime.fromisoformat(event_end.replace("Z", "+00:00"))
+                    evt_start = evt_start.astimezone(booking_tz)
+                    evt_end = evt_end.astimezone(booking_tz)
+
+                    if not (slot_end <= evt_start or current >= evt_end):
+                        is_busy = True
+                        break
+
+                if not is_busy and current > now:
+                    slots.append(
+                        {
+                            "start": current.astimezone(ZoneInfo("UTC")).isoformat(),
+                            "end": slot_end.astimezone(ZoneInfo("UTC")).isoformat(),
+                            "display": current.strftime("%A, %B %d at %H:%M"),
+                        }
+                    )
+
+            current += timedelta(minutes=duration)
+            if current.hour >= end_hour:
+                current = (current + timedelta(days=1)).replace(
+                    hour=start_hour, minute=0
+                )
 
         return JSONResponse(
             {
                 "success": True,
-                "slots": slots[:20],
+                "slots": slots[:50],
+                "host_name": link.get("host_name"),
+                "meeting_title": link.get("meeting_title"),
+                "meeting_description": link.get("meeting_description"),
+                "duration_minutes": duration,
+                "timezone": link.get("timezone"),
             }
         )
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.exception("Failed to load booking slots for %s", link_id)
         return JSONResponse(
             {
                 "success": False,
@@ -520,8 +834,10 @@ async def book_meeting(
     slot_end: str = Form(...),
 ):
     try:
-        summary = f"Meeting with {name}"
-        description = f"Booked via scheduling link\n\nAttendee: {name} ({email})"
+        link = _require_booking_link(link_id)
+        summary = link.get("meeting_title") or f"Meeting with {name}"
+        description = link.get("meeting_description") or "Booked via scheduling link"
+        description += f"\n\nAttendee: {name} ({email})"
         if notes:
             description += f"\n\nNotes: {notes}"
 
@@ -532,6 +848,7 @@ async def book_meeting(
             description=description,
             attendees=[email],
             add_meet=True,
+            calendar_id=link["calendar_id"],
         )
 
         return JSONResponse(
@@ -541,7 +858,10 @@ async def book_meeting(
                 "event": result,
             }
         )
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.exception("Failed to book meeting for %s", link_id)
         return JSONResponse(
             {
                 "success": False,

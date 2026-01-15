@@ -72,27 +72,24 @@ async def get_sync_status(
         elif unresolved_errors > 0:
             health = "warning"
 
-        return JSONResponse(
-            {
-                "status": "ok",
-                "health": health,
-                "sync": {
-                    "last_sync": last_sync.isoformat() if last_sync else None,
-                    "sync_age_seconds": sync_age_seconds,
-                    "folders": folders,
-                    "folder_limit": folder_limit,
-                },
-                "errors": {
-                    "items": errors,
-                    "unresolved": unresolved_errors,
-                    "error_limit": error_limit,
-                },
-                "metrics": {
-                    "recent": recent_metrics,
-                    "limit": 50,
-                },
-            }
-        )
+        return {
+            "health": health,
+            "sync": {
+                "last_sync": last_sync.isoformat() if last_sync else None,
+                "sync_age_seconds": sync_age_seconds,
+                "folders": folders,
+                "folder_limit": folder_limit,
+            },
+            "errors": {
+                "items": errors,
+                "unresolved": unresolved_errors,
+                "error_limit": error_limit,
+            },
+            "metrics": {
+                "recent": recent_metrics,
+                "limit": 50,
+            },
+        }
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -157,14 +154,11 @@ async def get_activity_log(
                         k = (item.get("email_uid"), item.get("email_folder"))
                         item["email"] = email_map.get(k)
 
-        return JSONResponse(
-            {
-                "status": "ok",
-                "items": items,
-                "limit": limit,
-                "ordering": "created_at desc",
-                "include_email": include_email,
-            }
-        )
+        return {
+            "items": items,
+            "limit": limit,
+            "ordering": "created_at desc",
+            "include_email": include_email,
+        }
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))

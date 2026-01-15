@@ -1,4 +1,13 @@
-from fastapi import APIRouter, Request, Query, Form, Depends, UploadFile, File
+from fastapi import (
+    APIRouter,
+    Request,
+    Query,
+    Form,
+    Depends,
+    UploadFile,
+    File,
+    HTTPException,
+)
 from fastapi.responses import HTMLResponse, JSONResponse
 from typing import Optional, List
 import logging
@@ -126,26 +135,26 @@ async def send_email(
     schedule_time: Optional[str] = Form(None),
     session: Session = Depends(require_auth),
 ):
+    if attachments:
+        return JSONResponse(
+            {
+                "success": False,
+                "error": "Attachment support coming soon - engine needs update",
+            },
+            status_code=501,
+        )
+
+    if schedule_time:
+        return JSONResponse(
+            {
+                "success": False,
+                "error": "Scheduled send coming soon - needs queue implementation",
+            },
+            status_code=501,
+        )
+
     try:
-        if attachments:
-            return JSONResponse(
-                {
-                    "success": False,
-                    "error": "Attachment support coming soon - engine needs update",
-                },
-                status_code=501,
-            )
-
-        if schedule_time:
-            return JSONResponse(
-                {
-                    "success": False,
-                    "error": "Scheduled send coming soon - needs queue implementation",
-                },
-                status_code=501,
-            )
-
-        result = await engine.send_email(
+        await engine.send_email(
             to=to,
             subject=subject,
             body=body,
@@ -153,9 +162,21 @@ async def send_email(
             bcc=bcc or None,
             reply_to_message_id=reply_to_message_id or None,
         )
-        return JSONResponse({"success": True, "message": "Email sent successfully"})
-    except Exception as e:
-        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+    except HTTPException as exc:
+        logger.warning("Engine send failed", exc_info=exc)
+        return JSONResponse(
+            {"success": False, "error": exc.detail}, status_code=exc.status_code
+        )
+    except ValueError as exc:
+        logger.warning("Validation error when sending", exc_info=exc)
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+    except Exception as exc:
+        logger.error("Send email failed", exc_info=exc)
+        return JSONResponse(
+            {"success": False, "error": "Unexpected send failure"}, status_code=500
+        )
+
+    return JSONResponse({"success": True, "message": "Email sent successfully"})
 
 
 @router.get("/api/contacts/autocomplete")
@@ -184,12 +205,24 @@ async def save_draft(
 ):
     """Save a draft reply via Engine API."""
     try:
-        result = await engine.create_draft_reply(
+        await engine.create_draft_reply(
             uid=uid,
             folder=folder,
             body=body,
             reply_all=reply_all,
         )
-        return JSONResponse({"success": True, "message": "Draft saved"})
-    except Exception as e:
-        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+    except HTTPException as exc:
+        logger.warning("Draft save failed", exc_info=exc)
+        return JSONResponse(
+            {"success": False, "error": exc.detail}, status_code=exc.status_code
+        )
+    except ValueError as exc:
+        logger.warning("Draft validation error", exc_info=exc)
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+    except Exception as exc:
+        logger.error("Save draft failed", exc_info=exc)
+        return JSONResponse(
+            {"success": False, "error": "Unexpected draft failure"}, status_code=500
+        )
+
+    return JSONResponse({"success": True, "message": "Draft saved"})

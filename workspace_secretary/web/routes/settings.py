@@ -7,7 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from workspace_secretary.web import templates, get_template_context, get_web_config
+from workspace_secretary.web import (
+    templates,
+    get_template_context,
+    get_web_config,
+    database as db,
+)
 from workspace_secretary.web.auth import require_auth, Session
 
 logger = logging.getLogger(__name__)
@@ -194,6 +199,23 @@ async def calendar_partial(request: Request, session: Session = Depends(require_
     except Exception as e:
         logger.error(f"Failed to load calendar preferences: {e}")
 
+    try:
+        selection_state = db.get_calendar_selection_state(session.user_id)
+        states_by_id = {
+            state["calendar_id"]: state for state in selection_state["states"]
+        }
+        for calendar in calendars:
+            cal_id = calendar.get("id") or calendar.get("calendarId")
+            if not cal_id:
+                continue
+            state_info = states_by_id.get(cal_id, {})
+            calendar["sync_status"] = state_info.get("status")
+            calendar["last_sync"] = state_info.get(
+                "last_incremental_sync_at"
+            ) or state_info.get("last_full_sync_at")
+    except Exception as e:
+        logger.error(f"Failed to augment calendar sync state: {e}")
+
     return templates.TemplateResponse(
         "partials/settings_calendar.html",
         {"request": request, "calendars": calendars, "selected_ids": selected_ids},
@@ -218,45 +240,7 @@ async def update_identity_settings(
     )
 
     save_config(config, config_path="config/config.yaml")
-    return {"status": "ok"}
-
-
-@router.post("/api/settings/ai")
-async def update_ai_settings(
-    payload: AISettingsRequest,
-    session: Session = Depends(require_auth),
-):
-    from workspace_secretary.config import (
-        WebAgentConfig,
-        WebApiFormat,
-        load_config,
-        save_config,
-    )
-
-    config = load_config(config_path="config/config.yaml")
-    if not config:
-        raise HTTPException(status_code=500, detail="Config not loaded")
-
-    if not config.web:
-        raise HTTPException(status_code=500, detail="Web config not available")
-
-    agent = config.web.agent or WebAgentConfig()
-
-    if payload.base_url:
-        agent.base_url = payload.base_url
-    if payload.api_format:
-        agent.api_format = WebApiFormat.from_string(payload.api_format)
-    if payload.model:
-        agent.model = payload.model
-    if payload.token_limit is not None:
-        agent.token_limit = payload.token_limit
-    if payload.api_key:
-        agent.api_key = payload.api_key
-
-    config.web.agent = agent
-
-    save_config(config, config_path="config/config.yaml")
-    return {"status": "ok"}
+    return {"updated": True}
 
 
 @router.put("/api/settings/ui")
@@ -264,24 +248,25 @@ async def update_ui_settings(
     payload: UISettingsRequest,
     session: Session = Depends(require_auth),
 ):
-    theme = payload.theme
-    density = payload.density
-
-    allowed_themes = {"light", "dark", "system"}
-    allowed_density = {"compact", "default", "relaxed"}
-
-    if theme not in allowed_themes:
-        raise HTTPException(status_code=400, detail="Invalid theme")
-    if density not in allowed_density:
-        raise HTTPException(status_code=400, detail="Invalid density")
-
     from workspace_secretary.web.database import get_pool
-
-    prefs_json = {"theme": theme, "density": density}
 
     pool = get_pool()
     with pool.connection() as conn:
         with conn.cursor() as cur:
+            cur.execute(
+                "SELECT prefs_json FROM user_preferences WHERE user_id = %s",
+                (session.user_id,),
+            )
+            row = cur.fetchone()
+            prefs: dict = {}
+            if row and row[0]:
+                prefs = row[0]
+                if isinstance(prefs, str):
+                    prefs = json.loads(prefs)
+
+            prefs["theme"] = payload.theme
+            prefs["density"] = payload.density
+
             cur.execute(
                 """
                 INSERT INTO user_preferences (user_id, prefs_json, updated_at)
@@ -289,11 +274,15 @@ async def update_ui_settings(
                 ON CONFLICT (user_id)
                 DO UPDATE SET prefs_json = EXCLUDED.prefs_json, updated_at = NOW()
                 """,
-                (session.user_id, json.dumps(prefs_json)),
+                (session.user_id, json.dumps(prefs)),
             )
         conn.commit()
 
-    return {"status": "ok"}
+    return {
+        "updated": True,
+        "theme": payload.theme,
+        "density": payload.density,
+    }
 
 
 @router.put("/api/settings/calendar")
@@ -334,4 +323,4 @@ async def update_calendar_settings(
             )
         conn.commit()
 
-    return {"status": "ok"}
+    return {"updated": True}

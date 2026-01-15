@@ -289,6 +289,28 @@ def initialize_calendar_schema(cur: Any) -> None:
         """
     )
 
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS booking_links (
+            link_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            calendar_id TEXT NOT NULL,
+            host_name TEXT,
+            meeting_title TEXT,
+            meeting_description TEXT,
+            timezone TEXT,
+            duration_minutes INTEGER NOT NULL DEFAULT 30,
+            availability_days INTEGER NOT NULL DEFAULT 14,
+            availability_start_hour INTEGER NOT NULL DEFAULT 11,
+            availability_end_hour INTEGER NOT NULL DEFAULT 22,
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            metadata JSONB,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        """
+    )
+
 
 def initialize_mutation_journal(cur: Any) -> None:
     """Initialize mutation journal (engine-only table, but idempotent)."""

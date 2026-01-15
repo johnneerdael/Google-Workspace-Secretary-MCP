@@ -11,14 +11,24 @@
                 class="w-4 h-4 rounded border-zinc-600 bg-zinc-800 text-blue-500 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
             />
             <div class="flex-1">
-                <div class="font-medium text-zinc-200">{{ calendar.summary }}</div>
+                <div class="font-medium text-zinc-200 flex items-center gap-2">
+                    {{ calendar.summary }}
+                    {% if calendar.primary %}
+                    <span class="text-xs px-2 py-1 rounded bg-blue-900/30 text-blue-400 border border-blue-700/50">Primary</span>
+                    {% endif %}
+                    {% if calendar.sync_status and calendar.sync_status != 'ok' %}
+                    <span class="text-xs px-2 py-1 rounded bg-amber-900/40 text-amber-300 border border-amber-700/50">
+                        {{ calendar.sync_status | capitalize }}
+                    </span>
+                    {% endif %}
+                </div>
                 {% if calendar.description %}
                 <div class="text-sm text-zinc-500">{{ calendar.description }}</div>
                 {% endif %}
+                {% if calendar.last_sync %}
+                <div class="text-xs text-zinc-500 mt-1">Last sync: {{ calendar.last_sync }}</div>
+                {% endif %}
             </div>
-            {% if calendar.primary %}
-            <span class="text-xs px-2 py-1 rounded bg-blue-900/30 text-blue-400 border border-blue-700/50">Primary</span>
-            {% endif %}
         </label>
         {% endfor %}
     </div>

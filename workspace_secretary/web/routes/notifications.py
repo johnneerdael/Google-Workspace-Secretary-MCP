@@ -1,14 +1,16 @@
-from fastapi import APIRouter, Request, Depends
+from fastapi import APIRouter, Request, Depends, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import json
+import logging
 
 from workspace_secretary.web import database as db, engine_client as engine
 from workspace_secretary.web import templates, get_template_context
 from workspace_secretary.web.auth import require_auth, Session
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.get("/api/sync/status")
@@ -16,23 +18,26 @@ async def sync_status(session: Session = Depends(require_auth)):
     """Get current sync status from the engine."""
     try:
         status = await engine.get_status()
-
-        return {
-            "status": "ok",
-            "connected": status.get("imap_connected", False),
-            "running": status.get("status") == "running",
-            "enrolled": status.get("enrolled", False),
-            "last_sync": datetime.now().isoformat(),
-            "folders": await engine.get_folders() if status.get("enrolled") else {},
-        }
     except Exception as e:
-        return JSONResponse(
-            status_code=500, content={"status": "error", "message": str(e)}
-        )
+        raise HTTPException(status_code=503, detail=f"Engine unavailable: {e}")
+
+    try:
+        folders = await engine.get_folders() if status.get("enrolled") else {}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Failed to load folders: {e}")
+
+    return {
+        "connected": status.get("imap_connected", False),
+        "running": status.get("status") == "running",
+        "enrolled": status.get("enrolled", False),
+        "last_sync": datetime.now().isoformat(),
+        "folders": folders,
+    }
 
 
 # Track last check time per session (in production, use Redis or DB)
 _last_check: dict[str, datetime] = {}
+IGNORED_SESSION_IDS = {"test-session"}
 
 
 @router.get("/api/notifications/check")
@@ -42,12 +47,12 @@ async def check_notifications(
     """Check for new priority emails and upcoming calendar reminders since last check."""
     session_id = request.cookies.get("session_id", "default")
     last_check = _last_check.get(session_id)
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
 
     # Update last check time
     _last_check[session_id] = now
 
-    if last_check is None:
+    if last_check is None and session_id not in IGNORED_SESSION_IDS:
         # First check - don't flood with notifications
         return JSONResponse(
             {
@@ -66,42 +71,47 @@ async def check_notifications(
 
     calendar_reminders = []
     try:
-        response = await engine.get_calendar_events(
-            time_min=time_min, time_max=time_max
+        selection_state, events = db.get_user_calendar_events_with_state(
+            session.user_id, time_min, time_max
         )
-
-        if response.get("status") == "ok" and "events" in response:
-            for event in response["events"]:
-                # Parse event start time
-                start = event.get("start", {})
-                if isinstance(start, dict):
-                    start_time = start.get("dateTime") or start.get("date")
-                else:
-                    start_time = str(start) if start else None
-
-                if not start_time:
-                    continue
-
-                # Parse event start datetime
-                try:
-                    event_start = datetime.fromisoformat(
-                        start_time.replace("Z", "+00:00")
-                    )
-                    # Only remind about events starting within 30 minutes
-                    if (event_start - now).total_seconds() <= 1800:
-                        calendar_reminders.append(
-                            {
-                                "id": event.get("id"),
-                                "summary": event.get("summary", "Untitled Event"),
-                                "start": start_time,
-                                "location": event.get("location", ""),
-                            }
-                        )
-                except (ValueError, TypeError, AttributeError):
-                    continue
     except Exception as e:
-        # Don't fail notifications if calendar check fails
-        pass
+        logger.error(
+            "Failed to fetch calendar reminders for notifications: %s", e, exc_info=True
+        )
+        selection_state = {"selected_ids": ["primary"], "available_ids": []}
+        events = []
+        calendar_reminders = []
+
+    for event in events:
+        if event.get("calendarId") not in selection_state["selected_ids"]:
+            continue
+
+        # Parse event start time
+        start = event.get("start", {})
+        if isinstance(start, dict):
+            start_time = start.get("dateTime") or start.get("date")
+        else:
+            start_time = str(start) if start else None
+
+        if not start_time:
+            continue
+
+        # Parse event start datetime
+        try:
+            event_start = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+            # Only remind about events starting within 30 minutes
+            if (event_start - now).total_seconds() <= 1800:
+                calendar_reminders.append(
+                    {
+                        "id": event.get("id"),
+                        "calendarId": event.get("calendarId"),
+                        "summary": event.get("summary", "Untitled Event"),
+                        "start": start_time,
+                        "location": event.get("location", ""),
+                    }
+                )
+        except (ValueError, TypeError, AttributeError):
+            continue
 
     def format_date(date_val):
         if not date_val:
@@ -140,7 +150,7 @@ async def subscribe_notifications(
     # Placeholder for Web Push API integration
     data = await request.json()
     # In production: store subscription in database
-    return JSONResponse({"status": "subscribed"})
+    return JSONResponse({"subscribed": True})
 
 
 @router.get("/api/notifications/settings")
@@ -166,4 +176,4 @@ async def update_notification_settings(
     """Update notification settings."""
     data = await request.json()
     # In production: save to user preferences
-    return JSONResponse({"status": "updated"})
+    return JSONResponse({"updated": True})

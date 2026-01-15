@@ -5,15 +5,43 @@
 <div class="space-y-4" x-data="{ 
     showEventDetail: false, 
     selectedEvent: null,
+    selectedEventLoading: false,
+    selectedEventError: null,
     showCreateEvent: false,
     newEvent: { summary: '', description: '', start_date: '', start_time: '', end_date: '', end_time: '', location: '' },
     showSettings: false,
-    visibleCalendars: ['primary'],
+    visibleCalendars: {{ selected_calendar_ids_json | safe }},
+    allCalendars: {{ calendar_options_json | safe }},
     secondaryTimezone: null,
     showWorkingHours: true,
-    openEventDetail(event) {
-        this.selectedEvent = event;
+    async openEventDetail(event) {
+        this.selectedEventError = null;
+        if (!event) {
+            this.selectedEvent = null;
+            return;
+        }
+        this.selectedEvent = JSON.parse(JSON.stringify(event));
         this.showEventDetail = true;
+        if (!event.calendarId || !event.id) {
+            this.selectedEventError = 'Missing calendar identifiers for this event.';
+            return;
+        }
+        this.selectedEventLoading = true;
+        try {
+            const response = await fetch(`/api/calendar/event/${encodeURIComponent(event.calendarId)}/${encodeURIComponent(event.id)}`);
+            if (!response.ok) {
+                throw new Error('Unable to load event details');
+            }
+            const data = await response.json();
+            if (!data?.success || !data?.event) {
+                throw new Error(data?.error || 'Event not available');
+            }
+            this.selectedEvent = data.event;
+        } catch (error) {
+            this.selectedEventError = error?.message || 'Unexpected error while loading event details.';
+        } finally {
+            this.selectedEventLoading = false;
+        }
     },
     openCreateEvent() {
         this.showCreateEvent = true;
@@ -139,13 +167,23 @@
         <div>
             <h3 class="h2 mb-2">Calendars</h3>
             <div class="space-y-2">
-                <label class="flex items-center space-x-2 cursor-pointer">
-                    <input type="checkbox" 
-                           x-model="visibleCalendars" 
-                           value="primary"
-                           class="rounded bg-surface-subtle border-border text-primary focus:ring-primary">
-                    <span class="text-sm text-body">Primary Calendar</span>
-                </label>
+                <template x-for="calendar in allCalendars" :key="calendar.id">
+                    <label class="flex items-center space-x-2 cursor-pointer">
+                        <input type="checkbox" 
+                               x-model="visibleCalendars" 
+                               :value="calendar.id"
+                               class="rounded bg-surface-subtle border-border text-primary focus:ring-primary">
+                        <div>
+                            <span class="text-sm text-body" x-text="calendar.summary || calendar.id"></span>
+                            <template x-if="calendar.primary">
+                                <span class="ml-2 text-[11px] px-1.5 py-0.5 rounded bg-primary/20 text-primary border border-primary/30">Primary</span>
+                            </template>
+                        </div>
+                    </label>
+                </template>
+                <template x-if="!allCalendars.length">
+                    <p class="text-sm text-muted">No calendars available.</p>
+                </template>
             </div>
         </div>
         
@@ -196,14 +234,18 @@
                 {% if event_hour == hour %}
                 <div class="absolute left-0 right-0 mx-1 mt-1 bg-primary/10 border-l-2 border-primary rounded p-2 text-xs cursor-pointer hover:bg-primary/20 transition-colors"
                      @click="openEventDetail({{ event|tojson }})">
-                    <div class="font-medium text-body flex items-center gap-1">
-                        {{ event.start.dateTime[11:16] }} {{ event.summary }}
-                        {% if event._local_status == 'pending' %}
-                        <span class="text-[10px] px-1.5 py-0.5 rounded bg-yellow-900/30 text-yellow-400 border border-yellow-700/50">⏱ Pending</span>
-                        {% elif event._local_status == 'conflict' %}
-                        <span class="text-[10px] px-1.5 py-0.5 rounded bg-red-900/30 text-red-400 border border-red-700/50">⚠ Conflict</span>
-                        {% endif %}
-                    </div>
+                         <div class="font-medium text-body flex items-center gap-1">
+                             {{ event.start.dateTime[11:16] }} {{ event.summary }}
+                             {% if event.calendarId %}
+                             <span class="text-[10px] px-1.5 py-0.5 rounded bg-surface-subtle text-muted border border-border">{{ event.calendarId }}</span>
+                             {% endif %}
+                             {% if event._local_status == 'pending' %}
+                             <span class="text-[10px] px-1.5 py-0.5 rounded bg-yellow-900/30 text-yellow-400 border border-yellow-700/50">⏱ Pending</span>
+                             {% elif event._local_status == 'conflict' %}
+                             <span class="text-[10px] px-1.5 py-0.5 rounded bg-red-900/30 text-red-400 border border-red-700/50">⚠ Conflict</span>
+                             {% endif %}
+                         </div>
+
                     {% if event.location %}
                     <div class="text-muted mt-1 truncate">📍 {{ event.location }}</div>
                     {% endif %}
@@ -253,14 +295,18 @@
                     {% for event in day.events[:3] %}
                     <div class="text-xs px-1 py-0.5 rounded bg-primary/10 text-primary truncate cursor-pointer hover:bg-primary/20 transition-colors"
                          @click="openEventDetail({{ event|tojson }})">
-                        <div class="flex items-center gap-1">
-                            {% if event.start.dateTime %}{{ event.start.dateTime[11:16] }}{% else %}🌅{% endif %} {{ event.summary }}
-                            {% if event._local_status == 'pending' %}
-                            <span class="text-[9px] px-1 py-0.5 rounded bg-yellow-900/30 text-yellow-400">⏱</span>
-                            {% elif event._local_status == 'conflict' %}
-                            <span class="text-[9px] px-1 py-0.5 rounded bg-red-900/30 text-red-400">⚠</span>
-                            {% endif %}
-                        </div>
+                         <div class="flex items-center gap-1">
+                             {% if event.start.dateTime %}{{ event.start.dateTime[11:16] }}{% else %}🌅{% endif %} {{ event.summary }}
+                             {% if event.calendarId %}
+                             <span class="text-[9px] px-1 py-0.5 rounded bg-surface-subtle text-muted border border-border">{{ event.calendarId }}</span>
+                             {% endif %}
+                             {% if event._local_status == 'pending' %}
+                             <span class="text-[9px] px-1 py-0.5 rounded bg-yellow-900/30 text-yellow-400">⏱</span>
+                             {% elif event._local_status == 'conflict' %}
+                             <span class="text-[9px] px-1 py-0.5 rounded bg-red-900/30 text-red-400">⚠</span>
+                             {% endif %}
+                         </div>
+
                     </div>
                     {% endfor %}
                     {% if day.events|length > 3 %}
@@ -293,14 +339,18 @@
                      @click="openEventDetail({{ event|tojson }})">
                     <div class="flex items-start justify-between">
                         <div class="flex-1">
-                            <div class="font-medium text-body flex items-center gap-2">
-                                {{ event.summary }}
-                                {% if event._local_status == 'pending' %}
-                                <span class="text-xs px-2 py-0.5 rounded bg-yellow-900/30 text-yellow-400 border border-yellow-700/50">⏱ Pending sync</span>
-                                {% elif event._local_status == 'conflict' %}
-                                <span class="text-xs px-2 py-0.5 rounded bg-red-900/30 text-red-400 border border-red-700/50">⚠ Conflict</span>
-                                {% endif %}
-                            </div>
+                             <div class="font-medium text-body flex items-center gap-2">
+                                 {{ event.summary }}
+                                 {% if event.calendarId %}
+                                 <span class="text-[10px] px-2 py-0.5 rounded bg-surface-subtle text-muted border border-border">{{ event.calendarId }}</span>
+                                 {% endif %}
+                                 {% if event._local_status == 'pending' %}
+                                 <span class="text-xs px-2 py-0.5 rounded bg-yellow-900/30 text-yellow-400 border border-yellow-700/50">⏱ Pending sync</span>
+                                 {% elif event._local_status == 'conflict' %}
+                                 <span class="text-xs px-2 py-0.5 rounded bg-red-900/30 text-red-400 border border-red-700/50">⚠ Conflict</span>
+                                 {% endif %}
+                             </div>
+
                             {% if event.location %}
                             <div class="text-sm text-muted mt-1">📍 {{ event.location }}</div>
                             {% endif %}
@@ -344,18 +394,22 @@
                 {% for event in day.events %}
                 <div class="text-xs p-2 rounded bg-surface-subtle hover:bg-surface-hover cursor-pointer transition-colors"
                      @click="openEventDetail({{ event|tojson }})">
-                    <div class="flex items-start justify-between">
-                        <div class="flex-1 min-w-0">
-                            <div class="font-medium text-body truncate">{{ event.summary }}</div>
-                            {% if event._local_status == 'pending' %}
-                            <div class="text-[9px] text-yellow-400 mt-0.5">⏱ Pending</div>
-                            {% elif event._local_status == 'conflict' %}
-                            <div class="text-[9px] text-red-400 mt-0.5">⚠ Conflict</div>
-                            {% endif %}
-                        </div>
-                        {% if event.start.dateTime %}
-                        <span class="text-muted ml-1">
-                            {{ event.start.dateTime[11:16] }}
+                     <div class="flex items-start justify-between">
+                         <div class="flex-1 min-w-0">
+                             <div class="font-medium text-body truncate">{{ event.summary }}</div>
+                             {% if event.calendarId %}
+                             <div class="text-[9px] text-muted mt-0.5">{{ event.calendarId }}</div>
+                             {% endif %}
+                             {% if event._local_status == 'pending' %}
+                             <div class="text-[9px] text-yellow-400 mt-0.5">⏱ Pending</div>
+                             {% elif event._local_status == 'conflict' %}
+                             <div class="text-[9px] text-red-400 mt-0.5">⚠ Conflict</div>
+                             {% endif %}
+                         </div>
+                         {% if event.start.dateTime %}
+                         <span class="text-muted ml-1">
+                             {{ event.start.dateTime[11:16] }}
+
                         </span>
                         {% elif event.start.date %}
                         <span class="text-muted ml-1">🌅</span>
@@ -393,108 +447,114 @@
                 </div>
                 
                 <div class="p-6 space-y-4 overflow-y-auto">
-                    <div x-show="selectedEvent?.start?.dateTime" class="flex items-start space-x-3">
-                        <span class="text-2xl">🕐</span>
-                        <div>
-                            <div class="text-sm text-muted">Time</div>
-                            <div class="text-body">
-                                <span x-text="selectedEvent?.start?.dateTime ? new Date(selectedEvent.start.dateTime).toLocaleString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : ''"></span>
-                            </div>
-                            <div class="text-body mt-1">
-                                <span x-text="selectedEvent?.start?.dateTime ? selectedEvent.start.dateTime.substring(11, 16) : ''"></span>
-                                <span x-show="selectedEvent?.end?.dateTime"> - </span>
-                                <span x-text="selectedEvent?.end?.dateTime ? selectedEvent.end.dateTime.substring(11, 16) : ''"></span>
+                    <div x-show="selectedEventLoading" class="flex items-center justify-center py-8 text-muted text-sm">
+                        Loading latest event details...
+                    </div>
+                    <div x-show="selectedEventError" class="bg-red-900/30 border border-red-700 text-red-200 px-4 py-3 rounded" x-text="selectedEventError"></div>
+                    <div x-show="!selectedEventLoading && !selectedEventError" class="space-y-4">
+                        <div x-show="selectedEvent?.start?.dateTime" class="flex items-start space-x-3">
+                            <span class="text-2xl">🕐</span>
+                            <div>
+                                <div class="text-sm text-muted">Time</div>
+                                <div class="text-body">
+                                    <span x-text="selectedEvent?.start?.dateTime ? new Date(selectedEvent.start.dateTime).toLocaleString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : ''"></span>
+                                </div>
+                                <div class="text-body mt-1">
+                                    <span x-text="selectedEvent?.start?.dateTime ? selectedEvent.start.dateTime.substring(11, 16) : ''"></span>
+                                    <span x-show="selectedEvent?.end?.dateTime"> - </span>
+                                    <span x-text="selectedEvent?.end?.dateTime ? selectedEvent.end.dateTime.substring(11, 16) : ''"></span>
+                                </div>
                             </div>
                         </div>
-                    </div>
 
-                    <div x-show="selectedEvent?.start?.date && !selectedEvent?.start?.dateTime" class="flex items-start space-x-3">
-                        <span class="text-2xl">🌅</span>
-                        <div>
-                            <div class="text-sm text-muted">All Day Event</div>
-                            <div class="text-body">
-                                <span x-text="selectedEvent?.start?.date ? new Date(selectedEvent.start.date + 'T00:00:00').toLocaleString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : ''"></span>
+                        <div x-show="selectedEvent?.start?.date && !selectedEvent?.start?.dateTime" class="flex items-start space-x-3">
+                            <span class="text-2xl">🌅</span>
+                            <div>
+                                <div class="text-sm text-muted">All Day Event</div>
+                                <div class="text-body">
+                                    <span x-text="selectedEvent?.start?.date ? new Date(selectedEvent.start.date + 'T00:00:00').toLocaleString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : ''"></span>
+                                </div>
                             </div>
                         </div>
-                    </div>
 
-                    <div x-show="selectedEvent?.description" class="flex items-start space-x-3">
-                        <span class="text-2xl">📝</span>
-                        <div class="flex-1">
-                            <div class="text-sm text-muted">Description</div>
-                            <div class="text-body whitespace-pre-wrap" x-text="selectedEvent?.description"></div>
-                        </div>
-                    </div>
-                    
-                    <div x-show="selectedEvent?.location" class="flex items-start space-x-3">
-                        <span class="text-2xl">📍</span>
-                        <div class="flex-1">
-                            <div class="text-sm text-muted">Location</div>
-                            <div class="text-body" x-text="selectedEvent?.location"></div>
-                        </div>
-                    </div>
-                    
-                    <div x-show="selectedEvent?.hangoutLink" class="flex items-start space-x-3">
-                        <span class="text-2xl">🎥</span>
-                        <div class="flex-1">
-                            <div class="text-sm text-muted">Video Conference</div>
-                            <a :href="selectedEvent?.hangoutLink" target="_blank" 
-                               class="link">
-                                Join Google Meet
-                            </a>
-                        </div>
-                    </div>
-                    
-                    <div x-show="selectedEvent?.attendees && selectedEvent.attendees.length > 0" class="flex items-start space-x-3">
-                        <span class="text-2xl">👥</span>
-                        <div class="flex-1">
-                            <div class="text-sm text-muted mb-2">
-                                Attendees (<span x-text="selectedEvent?.attendees?.length || 0"></span>)
+                        <div x-show="selectedEvent?.description" class="flex items-start space-x-3">
+                            <span class="text-2xl">📝</span>
+                            <div class="flex-1">
+                                <div class="text-sm text-muted">Description</div>
+                                <div class="text-body whitespace-pre-wrap" x-text="selectedEvent?.description"></div>
                             </div>
-                            <div class="space-y-2">
-                                <template x-for="attendee in selectedEvent?.attendees || []" :key="attendee.email">
-                                    <div class="flex items-center justify-between text-sm">
-                                        <div>
-                                            <span class="text-body" x-text="attendee.displayName || attendee.email"></span>
-                                            <span class="text-muted" x-show="attendee.displayName"> 
-                                                (<span x-text="attendee.email"></span>)
+                        </div>
+                        
+                        <div x-show="selectedEvent?.location" class="flex items-start space-x-3">
+                            <span class="text-2xl">📍</span>
+                            <div class="flex-1">
+                                <div class="text-sm text-muted">Location</div>
+                                <div class="text-body" x-text="selectedEvent?.location"></div>
+                            </div>
+                        </div>
+                        
+                        <div x-show="selectedEvent?.hangoutLink" class="flex items-start space-x-3">
+                            <span class="text-2xl">🎥</span>
+                            <div class="flex-1">
+                                <div class="text-sm text-muted">Video Conference</div>
+                                <a :href="selectedEvent?.hangoutLink" target="_blank" 
+                                   class="link">
+                                    Join Google Meet
+                                </a>
+                            </div>
+                        </div>
+                        
+                        <div x-show="selectedEvent?.attendees && selectedEvent.attendees.length > 0" class="flex items-start space-x-3">
+                            <span class="text-2xl">👥</span>
+                            <div class="flex-1">
+                                <div class="text-sm text-muted mb-2">
+                                    Attendees (<span x-text="selectedEvent?.attendees?.length || 0"></span>)
+                                </div>
+                                <div class="space-y-2">
+                                    <template x-for="attendee in selectedEvent?.attendees || []" :key="attendee.email">
+                                        <div class="flex items-center justify-between text-sm">
+                                            <div>
+                                                <span class="text-body" x-text="attendee.displayName || attendee.email"></span>
+                                                <span class="text-muted" x-show="attendee.displayName"> 
+                                                    (<span x-text="attendee.email"></span>)
+                                                </span>
+                                            </div>
+                                            <span class="badge"
+                                                  :class="{
+                                                      'badge-success': attendee.responseStatus === 'accepted',
+                                                      'badge-error': attendee.responseStatus === 'declined',
+                                                      'badge-warning': attendee.responseStatus === 'tentative',
+                                                      'badge-neutral': attendee.responseStatus === 'needsAction'
+                                                  }"
+                                                  x-text="attendee.responseStatus === 'accepted' ? 'Accepted' : 
+                                                          attendee.responseStatus === 'declined' ? 'Declined' : 
+                                                          attendee.responseStatus === 'tentative' ? 'Maybe' : 'No response'">
                                             </span>
                                         </div>
-                                        <span class="badge"
-                                              :class="{
-                                                  'badge-success': attendee.responseStatus === 'accepted',
-                                                  'badge-error': attendee.responseStatus === 'declined',
-                                                  'badge-warning': attendee.responseStatus === 'tentative',
-                                                  'badge-neutral': attendee.responseStatus === 'needsAction'
-                                              }"
-                                              x-text="attendee.responseStatus === 'accepted' ? 'Accepted' : 
-                                                      attendee.responseStatus === 'declined' ? 'Declined' : 
-                                                      attendee.responseStatus === 'tentative' ? 'Maybe' : 'No response'">
-                                        </span>
-                                    </div>
-                                </template>
+                                    </template>
+                                </div>
                             </div>
                         </div>
-                    </div>
 
-                    <div x-show="selectedEvent?.organizer" class="flex items-start space-x-3">
-                        <span class="text-2xl">👤</span>
-                        <div class="flex-1">
-                            <div class="text-sm text-muted">Organizer</div>
-                            <div class="text-body">
-                                <span x-text="selectedEvent?.organizer?.displayName || selectedEvent?.organizer?.email"></span>
+                        <div x-show="selectedEvent?.organizer" class="flex items-start space-x-3">
+                            <span class="text-2xl">👤</span>
+                            <div class="flex-1">
+                                <div class="text-sm text-muted">Organizer</div>
+                                <div class="text-body">
+                                    <span x-text="selectedEvent?.organizer?.displayName || selectedEvent?.organizer?.email"></span>
+                                </div>
                             </div>
                         </div>
-                    </div>
-                    
-                    <div x-show="selectedEvent?.htmlLink" class="flex items-start space-x-3">
-                        <span class="text-2xl">🔗</span>
-                        <div class="flex-1">
-                            <div class="text-sm text-muted">Calendar Link</div>
-                            <a :href="selectedEvent?.htmlLink" target="_blank" 
-                               class="link text-sm">
-                                View in Google Calendar
-                            </a>
+                        
+                        <div x-show="selectedEvent?.htmlLink" class="flex items-start space-x-3">
+                            <span class="text-2xl">🔗</span>
+                            <div class="flex-1">
+                                <div class="text-sm text-muted">Calendar Link</div>
+                                <a :href="selectedEvent?.htmlLink" target="_blank" 
+                                   class="link text-sm">
+                                    View in Google Calendar
+                                </a>
+                            </div>
                         </div>
                     </div>
                 </div>
