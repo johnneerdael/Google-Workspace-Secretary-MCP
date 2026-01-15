@@ -1989,6 +1989,40 @@ async def create_calendar_event(req: CalendarEventRequest):
         )
 
 
+@app.get("/api/calendar/conference-solutions")
+async def get_conference_solutions(calendar_id: str = "primary"):
+    """Get available conference solutions for a calendar.
+
+    Returns the list of video conferencing types available for creating events
+    with automatic meeting links (e.g., Google Meet).
+    """
+    if not state.enrolled:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account configured. Run auth_setup to add an account.",
+        )
+
+    if not state.calendar_client or not state.calendar_client.service:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Calendar not connected",
+        )
+
+    try:
+        solutions = state.calendar_client.get_conference_solutions(calendar_id)
+        return {
+            "status": "ok",
+            "calendar_id": calendar_id,
+            "conference_solutions": solutions,
+        }
+    except Exception as e:
+        logger.exception("Failed to fetch conference solutions")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch conference solutions: {str(e)}",
+        )
+
+
 @app.post("/api/calendar/respond")
 async def respond_to_meeting(req: MeetingResponseRequest):
     if not state.enrolled:

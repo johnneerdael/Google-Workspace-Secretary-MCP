@@ -155,6 +155,28 @@ def _require_booking_link(link_id: str) -> dict[str, Any]:
     return link
 
 
+@router.get("/api/calendar/conference-solutions")
+async def get_conference_solutions(
+    calendar_id: str = "primary",
+    session: Session = Depends(require_auth),
+):
+    """Get available conference solutions for creating video meetings."""
+    engine_client = engine.get_engine_client()
+    try:
+        response = await engine_client.get(
+            f"/api/calendar/conference-solutions?calendar_id={calendar_id}"
+        )
+        if isinstance(response, JSONResponse):
+            return json.loads(response.body)
+        return response
+    except Exception as e:
+        logger.exception("Failed to fetch conference solutions")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch conference solutions: {str(e)}",
+        )
+
+
 @router.get("/calendar", response_class=HTMLResponse)
 async def calendar_view(
     request: Request,

@@ -236,3 +236,9 @@ async def freebusy_query(time_min: str, time_max: str, calendar_ids: list[str]) 
         "calendar_ids": calendar_ids,
     }
     return await _request("POST", "/api/calendar/freebusy", payload)
+
+
+async def get_conference_solutions(calendar_id: str = "primary") -> dict:
+    return await _request(
+        "GET", f"/api/calendar/conference-solutions?calendar_id={calendar_id}"
+    )

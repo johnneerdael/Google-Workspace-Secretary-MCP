@@ -130,3 +130,63 @@ class CalendarClient:
         }
 
         return service.freebusy().query(body=body).execute()
+
+    def get_calendar(
+        self,
+        calendar_id: str = "primary",
+    ) -> Dict[str, Any]:
+        """Get calendar details including conference properties.
+
+        Args:
+            calendar_id: Calendar ID
+
+        Returns:
+            Calendar details with conferenceProperties
+        """
+        service = self._ensure_connected()
+        return service.calendars().get(calendarId=calendar_id).execute()
+
+    def get_conference_solutions(
+        self,
+        calendar_id: str = "primary",
+    ) -> List[Dict[str, Any]]:
+        """Get available conference solutions for a calendar.
+
+        Args:
+            calendar_id: Calendar ID
+
+        Returns:
+            List of conference solution types available for this calendar
+        """
+        calendar = self.get_calendar(calendar_id)
+        conference_properties = calendar.get("conferenceProperties", {})
+        allowed_types = conference_properties.get("allowedConferenceSolutionTypes", [])
+
+        # Map types to more readable names
+        type_mapping = {
+            "eventHangout": {
+                "id": "eventHangout",
+                "name": "Google Meet (Classic)",
+                "description": "Classic Google Meet video conferencing",
+            },
+            "eventNamedHangout": {
+                "id": "eventNamedHangout",
+                "name": "Named Hangout",
+                "description": "Named Google Hangout video conference",
+            },
+            "hangoutsMeet": {
+                "id": "hangoutsMeet",
+                "name": "Google Meet",
+                "description": "Modern Google Meet video conferencing",
+            },
+            "addOn": {
+                "id": "addOn",
+                "name": "Third-party Add-on",
+                "description": "Third-party video conferencing add-on",
+            },
+        }
+
+        return [
+            type_mapping.get(t, {"id": t, "name": t, "description": t})
+            for t in allowed_types
+        ]
