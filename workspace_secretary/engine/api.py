@@ -75,6 +75,9 @@ class EngineState:
         self.enrollment_error: Optional[str] = None
         self._sync_debounce_task: Optional[asyncio.Task] = None
         self._sync_debounce_delay: float = 2.0
+        self._initial_sync_in_progress: bool = (
+            False  # Block debounced_sync during lockstep
+        )
         self._embeddings_consecutive_failures: int = 0
         self._embeddings_cooldown_until: Optional[datetime] = None
         self._sync_executor: Optional[ThreadPoolExecutor] = None
@@ -446,9 +449,9 @@ async def imap_heartbeat_loop():
 async def sync_loop():
     """Background sync loop for email and calendar.
 
-    - Initial sync: lockstep batch sync+embed (50 emails at a time)
-    - After initial: IDLE handles INBOX push, periodic sync catches missed updates
-    - Embeddings loop starts after initial sync for steady-state
+    - IDLE starts immediately for real-time new email notifications
+    - Initial sync runs in background (lockstep batch sync+embed)
+    - After initial: periodic sync catches any missed updates
     """
     catchup_interval = int(
         os.environ.get("SYNC_CATCHUP_INTERVAL", "1800")
@@ -456,6 +459,16 @@ async def sync_loop():
     logger.info("Sync loop started")
 
     initial_sync_done = False
+
+    # Start IDLE immediately - don't wait for initial sync
+    if (
+        not state.idle_enabled
+        and state.idle_client
+        and state.idle_client.has_idle_capability()
+    ):
+        logger.info("Starting IDLE monitor for push notifications")
+        state.idle_task = asyncio.create_task(idle_monitor())
+        state.idle_enabled = True
 
     while state.running:
         try:
@@ -470,15 +483,6 @@ async def sync_loop():
                             "Starting embeddings background task for steady-state"
                         )
                         state.embeddings_task = asyncio.create_task(embeddings_loop())
-
-                    if (
-                        not state.idle_enabled
-                        and state.idle_client
-                        and state.idle_client.has_idle_capability()
-                    ):
-                        logger.info("Starting IDLE monitor for push notifications")
-                        state.idle_task = asyncio.create_task(idle_monitor())
-                        state.idle_enabled = True
 
                     logger.info(
                         f"Initial sync complete. Catch-up every {catchup_interval}s"
@@ -569,7 +573,11 @@ def _sync_folder_worker(folder: str) -> int:
 
 
 def _sync_single_folder(client: ImapClient, folder: str) -> int:
-    """Sync a single folder with the given client. Returns emails synced."""
+    """Sync a single folder with the given client. Returns emails synced.
+
+    Delegates to _sync_next_batch for gap-aware, newest-first sync.
+    Also handles CONDSTORE flag updates.
+    """
     if not state.database:
         return 0
 
@@ -578,22 +586,20 @@ def _sync_single_folder(client: ImapClient, folder: str) -> int:
         folder_info = client.select_folder(folder, readonly=True)
 
         current_uidvalidity = folder_info.get("uidvalidity", 0)
-        current_highestmodseq = folder_info.get("highestmodseq", 0)
-
         stored_uidvalidity = folder_state.get("uidvalidity", 0) if folder_state else 0
         stored_highestmodseq = (
             folder_state.get("highestmodseq", 0) if folder_state else 0
         )
-        stored_uidnext = folder_state.get("uidnext", 1) if folder_state else 1
+        current_highestmodseq = folder_info.get("highestmodseq", 0)
 
         if stored_uidvalidity != current_uidvalidity and stored_uidvalidity != 0:
             logger.warning(f"UIDVALIDITY changed for {folder}, clearing cache")
             state.database.clear_folder(folder)
-            stored_uidnext = 1
             stored_highestmodseq = 0
 
         has_condstore = client.has_condstore_capability()
 
+        # Fast-path: if HIGHESTMODSEQ unchanged, nothing to do
         if (
             has_condstore
             and stored_highestmodseq > 0
@@ -602,6 +608,7 @@ def _sync_single_folder(client: ImapClient, folder: str) -> int:
             logger.debug(f"HIGHESTMODSEQ unchanged for {folder}, skipping sync")
             return 0
 
+        # Update flags for changed emails (CONDSTORE optimization)
         if has_condstore and stored_highestmodseq > 0:
             changed = client.fetch_changed_since(folder, stored_highestmodseq)
             for uid, data in changed.items():
@@ -616,18 +623,86 @@ def _sync_single_folder(client: ImapClient, folder: str) -> int:
             if changed:
                 logger.info(f"Updated flags for {len(changed)} emails in {folder}")
 
-        uids = client.search(f"UID {stored_uidnext}:*", folder=folder)
-        new_uids = [uid for uid in uids if uid >= stored_uidnext]
+        # Sync missing emails using shared batch logic
+        total_synced = 0
+        synced_uids_set = set(state.database.get_synced_uids(folder))
+
+        while True:
+            synced_uids, has_more = _sync_next_batch(
+                client, folder, batch_size=50, synced_uids_set=synced_uids_set
+            )
+            if not synced_uids:
+                break
+            total_synced += len(synced_uids)
+            synced_uids_set.update(synced_uids)
+            if not has_more:
+                break
+
+        return total_synced
+
+    except Exception as e:
+        logger.error(f"Error syncing folder {folder}: {e}")
+        return 0
+
+    try:
+        folder_state = state.database.get_folder_state(folder)
+        folder_info = client.select_folder(folder, readonly=True)
+
+        current_uidvalidity = folder_info.get("uidvalidity", 0)
+        current_highestmodseq = folder_info.get("highestmodseq", 0)
+
+        stored_uidvalidity = folder_state.get("uidvalidity", 0) if folder_state else 0
+        stored_highestmodseq = (
+            folder_state.get("highestmodseq", 0) if folder_state else 0
+        )
+
+        if stored_uidvalidity != current_uidvalidity and stored_uidvalidity != 0:
+            logger.warning(f"UIDVALIDITY changed for {folder}, clearing cache")
+            state.database.clear_folder(folder)
+            stored_highestmodseq = 0
+
+        has_condstore = client.has_condstore_capability()
+
+        # Fast-path: if HIGHESTMODSEQ unchanged, nothing to do
+        if (
+            has_condstore
+            and stored_highestmodseq > 0
+            and current_highestmodseq == stored_highestmodseq
+        ):
+            logger.debug(f"HIGHESTMODSEQ unchanged for {folder}, skipping sync")
+            return 0
+
+        # Update flags for changed emails (CONDSTORE optimization)
+        if has_condstore and stored_highestmodseq > 0:
+            changed = client.fetch_changed_since(folder, stored_highestmodseq)
+            for uid, data in changed.items():
+                state.database.update_email_flags(
+                    uid=uid,
+                    folder=folder,
+                    flags=",".join(data["flags"]),
+                    is_unread="\\Seen" not in data["flags"],
+                    modseq=data["modseq"],
+                    gmail_labels=data.get("gmail_labels"),
+                )
+            if changed:
+                logger.info(f"Updated flags for {len(changed)} emails in {folder}")
+
+        # Gap-aware sync: find UIDs that exist on IMAP but not in DB
+        all_imap_uids = client.search("ALL", folder=folder)
+        synced_uids_set = set(state.database.get_synced_uids(folder))
+        missing_uids = sorted(
+            [uid for uid in all_imap_uids if uid not in synced_uids_set],
+            reverse=True,  # Newest first
+        )
 
         total_synced = 0
-        total_to_sync = len(new_uids) if new_uids else 0
+        total_to_sync = len(missing_uids)
 
-        if new_uids:
-            new_uids_desc = sorted(new_uids, reverse=True)
-            logger.info(f"[{folder}] Starting sync of {total_to_sync} emails")
+        if missing_uids:
+            logger.info(f"[{folder}] Starting sync of {total_to_sync} missing emails")
 
-            for i in range(0, len(new_uids_desc), 50):
-                batch = new_uids_desc[i : i + 50]
+            for i in range(0, len(missing_uids), 50):
+                batch = missing_uids[i : i + 50]
                 emails = client.fetch_emails(batch, folder, limit=50)
                 for uid, email_obj in emails.items():
                     params = _email_to_db_params(email_obj, folder)
@@ -635,10 +710,8 @@ def _sync_single_folder(client: ImapClient, folder: str) -> int:
                 total_synced += len(emails)
                 logger.info(f"[{folder}] {total_synced}/{total_to_sync} emails synced")
 
-            max_uid = max(new_uids)
-        else:
-            max_uid = stored_uidnext - 1
-
+        # Save folder state with current max UID
+        max_uid = max(all_imap_uids) if all_imap_uids else 0
         state.database.save_folder_state(
             folder=folder,
             uidvalidity=current_uidvalidity,
@@ -677,7 +750,8 @@ def _sync_next_batch(
             synced_uids_set = set(state.database.get_synced_uids(folder))
 
         missing_uids = sorted(
-            [uid for uid in all_imap_uids if uid not in synced_uids_set]
+            [uid for uid in all_imap_uids if uid not in synced_uids_set],
+            reverse=True,  # Newest first - users care about recent emails
         )
 
         if not missing_uids:
@@ -689,6 +763,7 @@ def _sync_next_batch(
             )
             return [], False
 
+        # Take from front (highest UIDs = newest emails)
         batch_uids = missing_uids[:batch_size]
         emails = client.fetch_emails(batch_uids, folder, limit=batch_size)
 
@@ -928,103 +1003,117 @@ async def embed_specific_uids(folder: str, uids: list[int]) -> int:
 
 
 async def initial_lockstep_sync_and_embed():
-    """Initial sync: sync batch → embed batch → repeat until done."""
+    """Initial sync: sync batch → embed batch → repeat until done.
+
+    Sets _initial_sync_in_progress flag to prevent debounced_sync from interfering.
+    """
     if not state.database or not state.config:
         return
 
-    folders = state.config.allowed_folders or ["INBOX"]
-    loop = asyncio.get_running_loop()
-    batch_size = 50
-    supports_embeddings = state.database.supports_embeddings()
+    state._initial_sync_in_progress = True
+    logger.info("Initial lockstep sync started - blocking debounced_sync")
 
-    if state._pool_init_lock is None:
-        state._pool_init_lock = asyncio.Lock()
+    try:
+        folders = state.config.allowed_folders or ["INBOX"]
+        loop = asyncio.get_running_loop()
+        batch_size = 50
+        supports_embeddings = state.database.supports_embeddings()
 
-    if state._imap_pool_size == 0:
-        async with state._pool_init_lock:
-            if state._imap_pool_size == 0:
-                logger.info("Initializing IMAP connection pool for lockstep sync...")
-                await loop.run_in_executor(None, _init_connection_pool)
+        if state._pool_init_lock is None:
+            state._pool_init_lock = asyncio.Lock()
 
-    if state._imap_pool_size == 0:
-        logger.error("No IMAP connections available for lockstep sync")
-        return
+        if state._imap_pool_size == 0:
+            async with state._pool_init_lock:
+                if state._imap_pool_size == 0:
+                    logger.info(
+                        "Initializing IMAP connection pool for lockstep sync..."
+                    )
+                    await loop.run_in_executor(None, _init_connection_pool)
 
-    total_synced = 0
-    total_embedded = 0
+        if state._imap_pool_size == 0:
+            logger.error("No IMAP connections available for lockstep sync")
+            return
 
-    for folder in folders:
-        folder_synced = 0
-        folder_embedded = 0
+        total_synced = 0
+        total_embedded = 0
 
-        db_count = state.database.count_emails(folder)
+        for folder in folders:
+            folder_synced = 0
+            folder_embedded = 0
 
-        def _get_folder_count():
-            try:
-                client = state._imap_pool.get(timeout=60)
-            except Empty:
-                return 0
-            try:
-                info = client.select_folder(folder, readonly=True)
-                return info.get("exists", 0)
-            finally:
-                state._imap_pool.put(client)
+            db_count = state.database.count_emails(folder)
 
-        folder_total = await loop.run_in_executor(
-            state._sync_executor, _get_folder_count
-        )
-
-        remaining = folder_total - db_count
-        if remaining <= 0:
-            logger.info(
-                f"[{folder}] Already fully synced ({db_count}/{folder_total} emails)"
-            )
-            continue
-
-        logger.info(
-            f"[{folder}] Resuming lockstep sync+embed ({db_count}/{folder_total} done, {remaining} remaining)..."
-        )
-
-        while state.running:
-
-            def _sync_batch():
+            def _get_folder_count():
                 try:
                     client = state._imap_pool.get(timeout=60)
                 except Empty:
-                    return [], False
+                    return 0
                 try:
-                    return _sync_next_batch(client, folder, batch_size)
+                    info = client.select_folder(folder, readonly=True)
+                    return info.get("exists", 0)
                 finally:
                     state._imap_pool.put(client)
 
-            synced_uids, has_more = await loop.run_in_executor(
-                state._sync_executor, _sync_batch
+            folder_total = await loop.run_in_executor(
+                state._sync_executor, _get_folder_count
             )
 
-            if not synced_uids:
-                break
+            remaining = folder_total - db_count
+            if remaining <= 0:
+                logger.info(
+                    f"[{folder}] Already fully synced ({db_count}/{folder_total} emails)"
+                )
+                continue
 
-            folder_synced += len(synced_uids)
-            total_done = db_count + folder_synced
-            pct = (total_done / folder_total * 100) if folder_total > 0 else 0
-            logger.info(f"[{folder}] Synced {total_done}/{folder_total} ({pct:.1f}%)")
+            logger.info(
+                f"[{folder}] Resuming lockstep sync+embed ({db_count}/{folder_total} done, {remaining} remaining)..."
+            )
 
-            if supports_embeddings:
-                embedded = await embed_specific_uids(folder, synced_uids)
-                folder_embedded += embedded
+            while state.running:
 
-            if not has_more:
-                break
+                def _sync_batch():
+                    try:
+                        client = state._imap_pool.get(timeout=60)
+                    except Empty:
+                        return [], False
+                    try:
+                        return _sync_next_batch(client, folder, batch_size)
+                    finally:
+                        state._imap_pool.put(client)
 
-        total_synced += folder_synced
-        total_embedded += folder_embedded
+                synced_uids, has_more = await loop.run_in_executor(
+                    state._sync_executor, _sync_batch
+                )
+
+                if not synced_uids:
+                    break
+
+                folder_synced += len(synced_uids)
+                total_done = db_count + folder_synced
+                pct = (total_done / folder_total * 100) if folder_total > 0 else 0
+                logger.info(
+                    f"[{folder}] Synced {total_done}/{folder_total} ({pct:.1f}%)"
+                )
+
+                if supports_embeddings:
+                    embedded = await embed_specific_uids(folder, synced_uids)
+                    folder_embedded += embedded
+
+                if not has_more:
+                    break
+
+            total_synced += folder_synced
+            total_embedded += folder_embedded
+            logger.info(
+                f"[{folder}] Complete: {folder_synced} synced, {folder_embedded} embedded"
+            )
+
         logger.info(
-            f"[{folder}] Complete: {folder_synced} synced, {folder_embedded} embedded"
+            f"Lockstep sync complete: {total_synced} synced, {total_embedded} embedded across {len(folders)} folders"
         )
-
-    logger.info(
-        f"Lockstep sync complete: {total_synced} synced, {total_embedded} embedded across {len(folders)} folders"
-    )
+    finally:
+        state._initial_sync_in_progress = False
+        logger.info("Initial lockstep sync finished - debounced_sync unblocked")
 
 
 def _idle_worker(
@@ -1032,42 +1121,54 @@ def _idle_worker(
     loop: asyncio.AbstractEventLoop,
     stop_event: threading.Event,
 ):
-    """Dedicated thread worker for IMAP IDLE operations.
-
-    Runs the entire IDLE loop on a separate thread to avoid blocking
-    the asyncio event loop. Communicates back via thread-safe event loop
-    scheduling when a sync is needed.
-    """
+    """Dedicated thread worker for IMAP IDLE operations."""
     idle_timeout = 25 * 60  # 25 minutes (Gmail requires re-IDLE every 29 min)
     logger.info("IDLE worker thread started")
 
     while not stop_event.is_set():
         try:
+            logger.info("IDLE: Selecting INBOX...")
             client.select_folder("INBOX", readonly=True)
+            logger.info("IDLE: Starting IDLE mode...")
             client.idle_start()
 
             try:
-                # This blocks for up to idle_timeout seconds
+                logger.info(
+                    f"IDLE: Waiting for notifications (timeout={idle_timeout}s)..."
+                )
                 responses = client.idle_check(timeout=idle_timeout)
 
                 if responses:
+                    logger.info(
+                        f"IDLE: Received {len(responses)} responses: {responses}"
+                    )
+                    should_sync = False
                     for response in responses:
-                        if len(response) >= 2 and response[1] in (
-                            b"EXISTS",
-                            b"EXPUNGE",
-                        ):
-                            logger.debug(f"IDLE notification: {response}")
-                            # Schedule sync on the main event loop (thread-safe)
-                            loop.call_soon_threadsafe(
-                                lambda: asyncio.create_task(debounced_sync())
-                            )
-                            break
+                        # Handle different IDLE response formats:
+                        # EXISTS: (count, b'EXISTS') - new message
+                        # EXPUNGE: (seq, b'EXPUNGE') - message deleted
+                        # FETCH: (seq, b'FETCH', (...)) - flags/modseq changed
+                        if len(response) >= 2:
+                            if response[1] in (b"EXISTS", b"EXPUNGE"):
+                                logger.info(f"IDLE: New mail or expunge: {response}")
+                                should_sync = True
+                                break
+                            elif response[1] == b"FETCH":
+                                logger.info(f"IDLE: Flag change detected: {response}")
+                                should_sync = True
+                                break
+
+                    if should_sync:
+                        loop.call_soon_threadsafe(
+                            lambda: asyncio.create_task(debounced_sync())
+                        )
+                else:
+                    logger.debug("IDLE: Timeout, no responses - restarting IDLE")
             finally:
                 client.idle_done()
 
         except Exception as e:
             logger.error(f"IDLE worker error: {e}")
-            # Sleep before retry, but check stop_event periodically
             for _ in range(30):
                 if stop_event.is_set():
                     break
@@ -1123,7 +1224,13 @@ async def debounced_sync():
     """Trigger a sync with debouncing to batch rapid changes.
 
     If called multiple times within the debounce window, only one sync runs.
+    Skips if initial lockstep sync is still in progress.
     """
+    # Don't interfere with lockstep sync - it handles its own batching
+    if state._initial_sync_in_progress:
+        logger.debug("Skipping debounced_sync - initial lockstep sync in progress")
+        return
+
     if state._sync_debounce_task and not state._sync_debounce_task.done():
         state._sync_debounce_task.cancel()
         try:

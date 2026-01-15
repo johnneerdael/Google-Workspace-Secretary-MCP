@@ -9,8 +9,8 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <script src="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.js"></script>
-    <script src="https://unpkg.com/@alpinejs/collapse@3.13.3/dist/cdn.min.js" defer></script>
-    <script src="https://unpkg.com/alpinejs@3.13.3/dist/cdn.min.js" defer></script>
+    <script src="https://unpkg.com/@alpinejs/collapse@3.x.x/dist/cdn.min.js" defer></script>
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
     <meta name="csrf-token" content="{{ csrf_token or '' }}">
     <script>
         document.addEventListener('htmx:configRequest', (event) => {
@@ -148,7 +148,7 @@
                                         Notifications not supported
                                     </span>
                                 </div>
-                                <div style="max-height: 24rem; overflow-y: auto;">
+                                <div style="max-height: 24rem; overflow-y: auto;" x-ref="notificationList">
                                     <template x-if="syncInProgress">
                                         <div style="display: block; padding: 0.75rem 1rem; border-bottom: 1px solid var(--color-border); background-color: rgba(59, 130, 246, 0.1);">
                                             <div style="display: flex; align-items: center; gap: 0.5rem;">
@@ -160,42 +160,10 @@
                                             </div>
                                         </div>
                                     </template>
-                                    <template x-if="notifications.length === 0 && !syncInProgress">
-                                        <div style="padding: 1rem; text-align: center; color: var(--color-muted); font-size: 0.875rem;">
-                                            No new notifications
-                                        </div>
-                                    </template>
-                                    <template x-for="n in notifications" :key="n.uid || n.id">
-                                        <div>
-                                            <template x-if="n.type === 'email'">
-                                                <a :href="'/thread/' + n.folder + '/' + n.uid"
-                                                   style="display: block; padding: 0.75rem 1rem; border-bottom: 1px solid var(--color-border);"
-                                                   @mouseenter="$el.style.backgroundColor = 'var(--color-surface-hover)'"
-                                                   @mouseleave="$el.style.backgroundColor = ''">
-                                                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.25rem;">
-                                                        <span style="font-size: 0.875rem; font-weight: 500; color: var(--color-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" x-text="n.from"></span>
-                                                        <span style="font-size: 0.75rem; color: var(--color-muted);" x-text="formatTime(n.date)"></span>
-                                                    </div>
-                                                    <p style="font-size: 0.875rem; color: var(--color-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" x-text="n.subject"></p>
-                                                </a>
-                                            </template>
-                                            <template x-if="n.type === 'calendar'">
-                                                <a href="/calendar"
-                                                   style="display: block; padding: 0.75rem 1rem; border-bottom: 1px solid var(--color-border); background-color: rgba(147, 51, 234, 0.1);"
-                                                   @mouseenter="$el.style.backgroundColor = 'rgba(147, 51, 234, 0.2)'"
-                                                   @mouseleave="$el.style.backgroundColor = 'rgba(147, 51, 234, 0.1)'">
-                                                    <div style="display: flex; align-items: start; gap: 0.5rem;">
-                                                        <span style="font-size: 1.125rem;">📅</span>
-                                                        <div style="flex: 1; min-width: 0;">
-                                                            <p style="font-size: 0.875rem; font-weight: 500; color: var(--color-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" x-text="n.summary"></p>
-                                                            <p style="font-size: 0.75rem; color: #a78bfa;" x-text="formatTime(n.start)"></p>
-                                                            <p style="font-size: 0.75rem; color: var(--color-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" x-show="n.location" x-text="n.location"></p>
-                                                        </div>
-                                                    </div>
-                                                </a>
-                                            </template>
-                                        </div>
-                                    </template>
+                                    <div x-show="notifications.length === 0 && !syncInProgress" style="padding: 1rem; text-align: center; color: var(--color-muted); font-size: 0.875rem;">
+                                        No new notifications
+                                    </div>
+                                    <div x-html="renderNotifications()"></div>
                                 </div>
                             </div>
                         </div>
@@ -422,8 +390,6 @@
                     if (this.notificationsSupported) {
                         this.notificationsEnabled = Notification.permission === 'granted';
                     }
-                    this.checkForNew();
-                    this.checkInterval = setInterval(() => this.checkForNew(), 30000);
                     
                     this.syncInProgress = localStorage.getItem('contactsSyncInProgress') === 'true';
                     
@@ -437,6 +403,12 @@
                         localStorage.removeItem('contactsSyncInProgress');
                         window.showToast(e.detail.success ? 'Contacts synced successfully!' : 'Sync failed', e.detail.success ? 'success' : 'error');
                     });
+                    
+                    // Delay first check to let Alpine fully initialize the x-for template
+                    setTimeout(() => {
+                        this.checkForNew();
+                        this.checkInterval = setInterval(() => this.checkForNew(), 30000);
+                    }, 100);
                 },
                 
                 togglePanel() {
@@ -492,10 +464,11 @@
 
                         // Process new emails
                         if (data.new_emails && Array.isArray(data.new_emails) && data.new_emails.length > 0) {
-                            this.notifications = [
+                            const newNotifications = [
                                 ...data.new_emails.map(e => ({ ...e, type: 'email' })),
-                                ...this.notifications
+                                ...this.notifications.filter(n => n && n.type)
                             ].slice(0, 20);
+                            this.notifications = newNotifications;
                             this.unreadCount = data.count || 0;
 
                             if (this.notificationsEnabled && data.new_emails.length > 0) {
@@ -518,7 +491,8 @@
                                 location: r.location
                             }));
 
-                            this.notifications = [...reminders, ...this.notifications].slice(0, 20);
+                            const newNotifications = [...reminders, ...this.notifications.filter(n => n && n.type)].slice(0, 20);
+                            this.notifications = newNotifications;
                             this.unreadCount = data.count || 0;
 
                             if (this.notificationsEnabled) {
@@ -547,6 +521,45 @@
                     if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
                     if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
                     return date.toLocaleDateString();
+                },
+                
+                escapeHtml(str) {
+                    if (!str) return '';
+                    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+                },
+                
+                renderNotifications() {
+                    if (!this.notifications || this.notifications.length === 0) return '';
+                    
+                    return this.notifications.map(n => {
+                        if (n.type === 'email') {
+                            return `<a href="/thread/${this.escapeHtml(n.folder)}/${this.escapeHtml(n.uid)}"
+                                style="display: block; padding: 0.75rem 1rem; border-bottom: 1px solid var(--color-border);"
+                                onmouseenter="this.style.backgroundColor='var(--color-surface-hover)'"
+                                onmouseleave="this.style.backgroundColor=''">
+                                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.25rem;">
+                                    <span style="font-size: 0.875rem; font-weight: 500; color: var(--color-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${this.escapeHtml(n.from)}</span>
+                                    <span style="font-size: 0.75rem; color: var(--color-muted);">${this.formatTime(n.date)}</span>
+                                </div>
+                                <p style="font-size: 0.875rem; color: var(--color-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${this.escapeHtml(n.subject)}</p>
+                            </a>`;
+                        } else if (n.type === 'calendar') {
+                            return `<a href="/calendar"
+                                style="display: block; padding: 0.75rem 1rem; border-bottom: 1px solid var(--color-border); background-color: rgba(147, 51, 234, 0.1);"
+                                onmouseenter="this.style.backgroundColor='rgba(147, 51, 234, 0.2)'"
+                                onmouseleave="this.style.backgroundColor='rgba(147, 51, 234, 0.1)'">
+                                <div style="display: flex; align-items: start; gap: 0.5rem;">
+                                    <span style="font-size: 1.125rem;">📅</span>
+                                    <div style="flex: 1; min-width: 0;">
+                                        <p style="font-size: 0.875rem; font-weight: 500; color: var(--color-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${this.escapeHtml(n.summary)}</p>
+                                        <p style="font-size: 0.75rem; color: #a78bfa;">${this.formatTime(n.start)}</p>
+                                        ${n.location ? `<p style="font-size: 0.75rem; color: var(--color-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${this.escapeHtml(n.location)}</p>` : ''}
+                                    </div>
+                                </div>
+                            </a>`;
+                        }
+                        return '';
+                    }).join('');
                 }
             };
         }

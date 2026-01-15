@@ -164,7 +164,9 @@ async def thread_view(
         raise HTTPException(status_code=404, detail="Email not found")
 
     # Auto-mark as read when viewing (runs in background, non-blocking)
-    if email.get("is_unread", False):
+    # Set is_unread=False for UI since we're about to mark it read
+    was_unread = email.get("is_unread", False)
+    if was_unread:
         background_tasks.add_task(_mark_read_background, uid, folder)
 
     labels = email.get("gmail_labels", [])
@@ -224,7 +226,7 @@ async def thread_view(
             folder=folder,
             uid=uid,
             is_starred=is_starred,
-            is_unread=email.get("is_unread", False),
+            is_unread=False if was_unread else email.get("is_unread", False),
             load_images=load_images,
             neighbors=neighbors,
             unread_only=unread_only,

@@ -36,3 +36,5 @@ tasks.json
 coverage.json
 output.yaml
 *.log
+postgres_data/
+postgres-data/

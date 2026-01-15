@@ -136,12 +136,33 @@
                         title="Toggle star">
                     {% if is_starred %}★{% else %}☆{% endif %}
                 </button>
-                <button @click="isRead = !isRead" 
-                        :hx-post="`/api/email/toggle-read/{{ folder }}/{{ uid }}?mark_unread=${!isRead}`"
-                        hx-swap="none"
+                <button @click="
+                            const wasRead = isRead;
+                            isRead = !isRead;
+                            fetch(`/api/email/toggle-read/{{ folder }}/{{ uid }}?mark_unread=${wasRead}`, { method: 'POST' })
+                                .then(r => r.json())
+                                .then(data => {
+                                    if (!data.success) {
+                                        isRead = wasRead; // Revert on failure
+                                        window.showToast && window.showToast('Failed to update', 'error');
+                                    }
+                                })
+                                .catch(() => {
+                                    isRead = wasRead; // Revert on failure
+                                });
+                        "
                         class="btn-icon" 
-                        title="Toggle read/unread">
-                    ✉️
+                        :class="{ 'text-primary': !isRead }"
+                        :title="isRead ? 'Mark as unread' : 'Mark as read'">
+                    <!-- When read: show checkmark (read state), clicking marks unread -->
+                    <svg x-show="isRead" class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M12 19c0-3.87 3.13-7 7-7 1.08 0 2.09.25 3 .68V6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h8.08c-.05-.33-.08-.66-.08-1zM4 6l8 5 8-5v2l-8 5-8-5V6zm13.34 16-3.54-3.54 1.41-1.41 2.12 2.12 4.24-4.24L23 16.34 17.34 22z"/>
+                    </svg>
+                    <!-- When unread: show dot (unread state), clicking marks read -->
+                    <svg x-show="!isRead" x-cloak class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M18.83 7h-2.6L20 10.76V19H4V6h10.6l-2-2H4c-1.1 0-2 .9-2 2v13c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2v-9.24L21.29 9c-.35-.07-.64-.24-.86-.46l-.61-.54zM4 8v.79l8 5.21 8-5.21V8l-8 5-8-5z"/>
+                        <circle cx="20" cy="4" r="3"/>
+                    </svg>
                 </button>
                 <div class="relative">
                     <button @click="showActions = !showActions" 
