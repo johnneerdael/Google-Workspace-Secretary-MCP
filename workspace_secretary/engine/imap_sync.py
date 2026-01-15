@@ -264,15 +264,15 @@ class ImapClient:
         if not self.has_condstore_capability():
             raise ValueError("Server does not support CONDSTORE")
 
-        client = self._get_client()
-        self.select_folder(folder)
+        def _do_store() -> MarkResult:
+            client = self._get_client()
+            self.select_folder(folder)
 
-        # Build the STORE command with UNCHANGEDSINCE modifier
-        # Format: UID STORE <uid> (UNCHANGEDSINCE <modseq>) +FLAGS.SILENT (<flag>)
-        action = b"+FLAGS.SILENT" if add else b"-FLAGS.SILENT"
-        flag_bytes = flag.encode() if isinstance(flag, str) else flag
+            # Build the STORE command with UNCHANGEDSINCE modifier
+            # Format: UID STORE <uid> (UNCHANGEDSINCE <modseq>) +FLAGS.SILENT (<flag>)
+            action = b"+FLAGS.SILENT" if add else b"-FLAGS.SILENT"
+            flag_bytes = flag.encode() if isinstance(flag, str) else flag
 
-        try:
             # Use raw command for CONDSTORE STORE with modifier
             # The command format is: UID STORE <uid> (UNCHANGEDSINCE <modseq>) +/-FLAGS.SILENT (<flags>)
             result = client._raw_command_untagged(
@@ -287,7 +287,7 @@ class ImapClient:
             )
 
             # Check for MODIFIED response (indicates race condition)
-            modified_uids = []
+            modified_uids: list[int] = []
             if b"MODIFIED" in result:
                 modified_raw = result[b"MODIFIED"]
                 if modified_raw:
@@ -324,9 +324,11 @@ class ImapClient:
             )
             return MarkResult(success=True, new_modseq=new_modseq)
 
+        try:
+            return self._run_with_reconnect("store_with_unchangedsince", _do_store)
         except Exception as e:
             error_str = str(e).upper()
-            # Check if error message indicates MODIFIED
+            # Check if error message indicates MODIFIED (not a connection issue)
             if "MODIFIED" in error_str:
                 logger.warning(f"STORE failed with MODIFIED for uid {uid}: {e}")
                 return MarkResult(
