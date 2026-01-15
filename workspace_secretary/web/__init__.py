@@ -11,6 +11,7 @@ Provides a human interface to the email system with:
 
 import logging
 import asyncio
+import os
 from datetime import datetime
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -28,6 +29,12 @@ logger = logging.getLogger(__name__)
 # Initialize Jinja2 templates
 _templates_dir = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_templates_dir))
+
+
+def _running_in_docker() -> bool:
+    if os.environ.get("DOCKER_ENV"):
+        return True
+    return Path("/.dockerenv").exists()
 
 
 def _strftime_filter(value, format_string: str) -> str:
@@ -107,8 +114,17 @@ def init_web_app(config: Optional[WebConfig] = None):
 
     from workspace_secretary.web.auth import init_auth, router as auth_router
     from workspace_secretary.web.routes.tasks import router as tasks_router
+    from workspace_secretary.web.engine_client import get_engine_url
 
     from workspace_secretary.web.auth import CSRFMiddleware
+
+    engine_url = get_engine_url()
+    if _running_in_docker() and any(
+        host in engine_url for host in ("localhost", "127.0.0.1")
+    ):
+        logger.warning(
+            "ENGINE_API_URL points to localhost in Docker; use the engine service name instead."
+        )
 
     init_auth(config)
     web_app.include_router(auth_router)

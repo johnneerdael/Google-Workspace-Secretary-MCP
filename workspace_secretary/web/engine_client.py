@@ -36,16 +36,42 @@ async def _request(method: str, path: str, json: Optional[dict] = None) -> dict:
         response.raise_for_status()
         return response.json()
     except httpx.HTTPStatusError as e:
-        detail = e.response.text
+        detail_message = e.response.text
+        detail_payload = {"message": detail_message, "error_type": None}
         try:
-            detail = e.response.json().get("detail", detail)
+            payload = e.response.json()
+            if isinstance(payload, dict):
+                if "detail" in payload:
+                    raw_detail = payload.get("detail")
+                    if isinstance(raw_detail, dict):
+                        detail_payload["message"] = (
+                            raw_detail.get("message")
+                            or raw_detail.get("detail")
+                            or raw_detail.get("error")
+                            or str(raw_detail)
+                        )
+                        detail_payload["error_type"] = raw_detail.get("error_type")
+                    else:
+                        detail_payload["message"] = raw_detail
+                if payload.get("error_type"):
+                    detail_payload["error_type"] = payload.get("error_type")
+                if payload.get("message"):
+                    detail_payload["message"] = payload.get("message")
         except Exception:
             pass
-        logger.error(f"Engine API error: {e.response.status_code} {detail}")
-        raise HTTPException(status_code=e.response.status_code, detail=detail)
+        logger.error(
+            f"Engine API error: {e.response.status_code} {detail_payload['message']}"
+        )
+        raise HTTPException(status_code=e.response.status_code, detail=detail_payload)
     except httpx.RequestError as e:
         logger.error(f"Engine API connection error: {e}")
-        raise HTTPException(status_code=503, detail="Engine API unavailable")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Engine API unavailable",
+                "error_type": "engine_unreachable",
+            },
+        )
 
 
 async def mark_read(uid: int, folder: str) -> dict:

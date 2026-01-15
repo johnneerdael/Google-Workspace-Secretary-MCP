@@ -361,7 +361,15 @@
             } else {
                  try {
                     const response = JSON.parse(errorDetail.responseText);
-                    message = response.detail || response.message || message;
+                    if (response.detail) {
+                        if (typeof response.detail === 'object') {
+                            message = response.detail.message || response.detail.detail || response.detail.error || message;
+                        } else {
+                            message = response.detail;
+                        }
+                    } else if (response.message) {
+                        message = response.message;
+                    }
                 } catch (e) { /* Ignore if not JSON */ }
                 showToast({ message, type: 'error' });
             }
