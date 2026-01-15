@@ -2,13 +2,13 @@
 {% block title %}Calendar - Secretary{% endblock %}
 
 {% block content %}
-<div class="space-y-4" x-data="{ 
+<div class="space-y-4" x-data='{ 
     showEventDetail: false, 
     selectedEvent: null,
     selectedEventLoading: false,
     selectedEventError: null,
     showCreateEvent: false,
-    newEvent: { summary: '', description: '', start_date: '', start_time: '', end_date: '', end_time: '', location: '' },
+    newEvent: { summary: "", description: "", start_date: "", start_time: "", end_date: "", end_time: "", location: "" },
     showSettings: false,
     visibleCalendars: {{ selected_calendar_ids_json | safe }},
     allCalendars: {{ calendar_options_json | safe }},
@@ -23,22 +23,22 @@
         this.selectedEvent = JSON.parse(JSON.stringify(event));
         this.showEventDetail = true;
         if (!event.calendarId || !event.id) {
-            this.selectedEventError = 'Missing calendar identifiers for this event.';
+            this.selectedEventError = "Missing calendar identifiers for this event.";
             return;
         }
         this.selectedEventLoading = true;
         try {
             const response = await fetch(`/api/calendar/event/${encodeURIComponent(event.calendarId)}/${encodeURIComponent(event.id)}`);
             if (!response.ok) {
-                throw new Error('Unable to load event details');
+                throw new Error("Unable to load event details");
             }
             const data = await response.json();
             if (!data?.success || !data?.event) {
-                throw new Error(data?.error || 'Event not available');
+                throw new Error(data?.error || "Event not available");
             }
             this.selectedEvent = data.event;
         } catch (error) {
-            this.selectedEventError = error?.message || 'Unexpected error while loading event details.';
+            this.selectedEventError = error?.message || "Unexpected error while loading event details.";
         } finally {
             this.selectedEventLoading = false;
         }
@@ -46,8 +46,8 @@
     openCreateEvent() {
         this.showCreateEvent = true;
         const now = new Date();
-        this.newEvent.start_date = now.toISOString().split('T')[0];
-        this.newEvent.end_date = now.toISOString().split('T')[0];
+        this.newEvent.start_date = now.toISOString().split("T")[0];
+        this.newEvent.end_date = now.toISOString().split("T")[0];
         this.newEvent.start_time = now.toTimeString().slice(0, 5);
         const endTime = new Date(now.getTime() + 60 * 60 * 1000);
         this.newEvent.end_time = endTime.toTimeString().slice(0, 5);
@@ -63,7 +63,7 @@
     isWorkingHour(hour) {
         return hour >= 11 && hour < 22;
     }
-}" @open-create-event.window="openCreateEvent()">
+}' @open-create-event.window="openCreateEvent()">
     {% if engine_error %}
     <div class="bg-red-900/90 border border-red-700 text-red-100 px-4 py-3 rounded">
         <div class="flex items-center gap-2">
