@@ -5,10 +5,11 @@ Provides streaming chat with HITL (Human-in-the-Loop) for mutation operations.
 
 import json
 import logging
+import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from langchain_core.messages import HumanMessage, AIMessage
 
 from workspace_secretary.web import templates, get_template_context
@@ -45,7 +46,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["chat"])
 
-# Cache for initialized graph
+CHAT_SESSION_COOKIE = "piper_chat_session"
+
 _graph_initialized = False
 
 
@@ -62,9 +64,16 @@ def _ensure_graph_initialized(config: ServerConfig) -> None:
         _graph_initialized = True
 
 
-def _get_thread_id(session: Session) -> str:
+def _get_thread_id(session: Session, chat_session_id: Optional[str] = None) -> str:
     """Get thread ID for a user session."""
+    if chat_session_id:
+        return f"chat-{session.user_id}-{chat_session_id}"
     return f"chat-{session.user_id}"
+
+
+def _generate_chat_session_id() -> str:
+    """Generate a new unique chat session ID."""
+    return uuid.uuid4().hex[:12]
 
 
 def _create_state_from_session(
@@ -87,21 +96,56 @@ def _create_state_from_session(
 
 
 @router.get("/chat", response_class=HTMLResponse)
-async def chat_page(request: Request, session: Session = Depends(require_auth)):
+async def chat_page(
+    request: Request,
+    session: Session = Depends(require_auth),
+    piper_chat_session: Optional[str] = Cookie(default=None),
+):
     """Render the chat page."""
+    chat_session_id = piper_chat_session or _generate_chat_session_id()
+
     ctx = get_template_context(
         request,
         page="chat",
-        chat_session_id=session.user_id,
+        chat_session_id=chat_session_id,
         conversation_starters=get_starters(),
     )
-    return templates.TemplateResponse("chat.html", ctx)
+    response = templates.TemplateResponse("chat.html", ctx)
+
+    if not piper_chat_session:
+        response.set_cookie(
+            key=CHAT_SESSION_COOKIE,
+            value=chat_session_id,
+            httponly=True,
+            samesite="lax",
+            max_age=86400 * 7,
+        )
+
+    return response
+
+
+@router.post("/api/chat/new-session")
+async def new_chat_session(
+    session: Session = Depends(require_auth),
+):
+    """Create a new chat session, clearing conversation history."""
+    new_session_id = _generate_chat_session_id()
+    response = JSONResponse({"session_id": new_session_id, "status": "created"})
+    response.set_cookie(
+        key=CHAT_SESSION_COOKIE,
+        value=new_session_id,
+        httponly=True,
+        samesite="lax",
+        max_age=86400 * 7,
+    )
+    return response
 
 
 @router.post("/api/chat")
 async def chat_message(
     request: Request,
     session: Session = Depends(require_auth),
+    piper_chat_session: Optional[str] = Cookie(default=None),
 ):
     """Handle non-streaming chat message (fallback)."""
     from workspace_secretary.web import get_web_config
@@ -119,7 +163,7 @@ async def chat_message(
     if not message:
         return {"error": "Empty message"}
 
-    thread_id = _get_thread_id(session)
+    thread_id = _get_thread_id(session, piper_chat_session)
     state = _create_state_from_session(session, config)
 
     # Add user message
@@ -138,6 +182,7 @@ async def chat_message(
 async def chat_message_stream(
     request: Request,
     session: Session = Depends(require_auth),
+    piper_chat_session: Optional[str] = Cookie(default=None),
 ):
     """Handle streaming chat message with HITL support."""
     from workspace_secretary.web.routes.analysis import get_config
@@ -162,7 +207,7 @@ async def chat_message_stream(
 
         return StreamingResponse(error_gen(), media_type="text/event-stream")
 
-    thread_id = _get_thread_id(session)
+    thread_id = _get_thread_id(session, piper_chat_session)
     state = _create_state_from_session(session, config)
 
     # Add user message
@@ -213,6 +258,9 @@ async def chat_message_stream(
                     if custom_name == "batch_progress":
                         data = event.get("data", {})
                         yield f"data: {json.dumps({'type': 'batch_progress', **data})}\n\n"
+                    elif custom_name == "batch_complete":
+                        data = event.get("data", {})
+                        yield f"data: {json.dumps({'type': 'batch_complete', **data})}\n\n"
 
                 # Graph completion or interrupt
                 elif event_type == "on_chain_end":
@@ -241,6 +289,7 @@ async def chat_message_stream(
 async def approve_mutation(
     request: Request,
     session: Session = Depends(require_auth),
+    piper_chat_session: Optional[str] = Cookie(default=None),
 ):
     """Approve a pending mutation and resume execution."""
     from workspace_secretary.web.routes.analysis import get_config
@@ -251,7 +300,7 @@ async def approve_mutation(
 
     _ensure_graph_initialized(config)
 
-    thread_id = _get_thread_id(session)
+    thread_id = _get_thread_id(session, piper_chat_session)
 
     # Check there's a pending mutation
     pending = get_pending_mutation(thread_id)
@@ -302,6 +351,9 @@ async def approve_mutation(
                     if custom_name == "batch_progress":
                         data = event.get("data", {})
                         yield f"data: {json.dumps({'type': 'batch_progress', **data})}\n\n"
+                    elif custom_name == "batch_complete":
+                        data = event.get("data", {})
+                        yield f"data: {json.dumps({'type': 'batch_complete', **data})}\n\n"
 
                 elif event_type == "on_chain_end":
                     if event.get("name") == "LangGraph":
@@ -329,6 +381,7 @@ async def approve_mutation(
 async def reject_mutation_endpoint(
     request: Request,
     session: Session = Depends(require_auth),
+    piper_chat_session: Optional[str] = Cookie(default=None),
 ):
     """Reject a pending mutation."""
     from workspace_secretary.web.routes.analysis import get_config
@@ -339,7 +392,7 @@ async def reject_mutation_endpoint(
 
     _ensure_graph_initialized(config)
 
-    thread_id = _get_thread_id(session)
+    thread_id = _get_thread_id(session, piper_chat_session)
 
     # Check there's a pending mutation
     pending = get_pending_mutation(thread_id)
@@ -375,6 +428,7 @@ async def clear_chat(
 async def get_chat_history(
     request: Request,
     session: Session = Depends(require_auth),
+    piper_chat_session: Optional[str] = Cookie(default=None),
 ):
     """Get chat history from checkpointer."""
     from workspace_secretary.web.routes.analysis import get_config
@@ -387,7 +441,7 @@ async def get_chat_history(
         _ensure_graph_initialized(config)
         graph = get_graph()
 
-        thread_id = _get_thread_id(session)
+        thread_id = _get_thread_id(session, piper_chat_session)
         state = graph.get_state({"configurable": {"thread_id": thread_id}})
 
         if not state or not state.values:
@@ -411,6 +465,7 @@ async def get_chat_history(
 async def get_pending_action(
     request: Request,
     session: Session = Depends(require_auth),
+    piper_chat_session: Optional[str] = Cookie(default=None),
 ):
     """Check if there's a pending mutation awaiting approval."""
     from workspace_secretary.web.routes.analysis import get_config
@@ -421,7 +476,7 @@ async def get_pending_action(
 
     try:
         _ensure_graph_initialized(config)
-        thread_id = _get_thread_id(session)
+        thread_id = _get_thread_id(session, piper_chat_session)
 
         pending = get_pending_mutation(thread_id)
         if pending:
@@ -522,6 +577,7 @@ Output ONLY the greeting text, no quotes, no explanation."""
 async def cancel_batch(
     request: Request,
     session: Session = Depends(require_auth),
+    piper_chat_session: Optional[str] = Cookie(default=None),
 ):
     """Cancel an ongoing batch operation."""
     from workspace_secretary.web.routes.analysis import get_config
@@ -531,7 +587,7 @@ async def cancel_batch(
         return {"error": "Server configuration not available"}
 
     _ensure_graph_initialized(config)
-    thread_id = _get_thread_id(session)
+    thread_id = _get_thread_id(session, piper_chat_session)
 
     try:
         graph = get_graph()

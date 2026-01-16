@@ -13,6 +13,16 @@ from typing import Literal
 BatchStatus = Literal["idle", "running", "awaiting_approval", "complete", "cancelled"]
 
 
+class EmailContext(TypedDict):
+    """Tracks recently discussed emails for natural follow-up actions."""
+
+    uid: int
+    folder: str
+    from_addr: str
+    subject: str
+    snippet: str
+
+
 class AssistantState(TypedDict):
     """State schema for the assistant graph."""
 
@@ -25,6 +35,8 @@ class AssistantState(TypedDict):
     timezone: str
     working_hours: dict[str, Any]
     selected_calendar_ids: list[str]
+
+    email_context: list[EmailContext]
 
     pending_mutation: Optional[dict[str, Any]]
     continuation_state: Optional[str]
@@ -69,6 +81,7 @@ def create_initial_state(
         timezone=timezone,
         working_hours=working_hours or {"start": "09:00", "end": "17:00"},
         selected_calendar_ids=selected_calendar_ids or ["primary"],
+        email_context=[],
         pending_mutation=None,
         continuation_state=None,
         tool_error=None,

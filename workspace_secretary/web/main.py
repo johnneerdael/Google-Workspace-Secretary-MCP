@@ -34,6 +34,7 @@ def main():
         admin,
         sync,
         health,
+        jobs,
     )
     from workspace_secretary.web.llm_client import init_llm_client
     from workspace_secretary.config import load_config
@@ -62,6 +63,7 @@ def main():
     web_app.include_router(admin.router)
     web_app.include_router(sync.router)
     web_app.include_router(health.router)
+    web_app.include_router(jobs.router)
 
     host = os.environ.get("WEB_HOST", "0.0.0.0")
     port = int(os.environ.get("WEB_PORT", "8080"))

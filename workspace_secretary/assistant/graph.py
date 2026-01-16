@@ -10,6 +10,7 @@ This module defines the main conversation graph with:
 
 import json
 import logging
+import re
 from typing import Any, Literal, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -21,7 +22,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode
 
-from workspace_secretary.assistant.state import AssistantState
+from workspace_secretary.assistant.state import AssistantState, EmailContext
 from workspace_secretary.assistant.context import (
     AssistantContext,
     set_context,
@@ -99,7 +100,65 @@ When user says "yes", "do it", "archive them", "proceed":
 
 ## User Context
 - Timezone: {timezone}
-- Working Hours: {working_hours}"""
+- Working Hours: {working_hours}
+
+## Email Context
+When emails are mentioned, their UIDs are tracked in conversation context.
+For follow-up questions like "what are they about?", refer to the email_context field.
+{email_context_summary}"""
+
+EMAIL_UID_PATTERN = re.compile(r"\[UID:(\d+)\]")
+EMAIL_LINE_PATTERN = re.compile(
+    r"\[UID:(\d+)\].*?(?:From|from)[:\s]+([^\n|]+).*?(?:Subject|Subj)[:\s]+([^\n]+)",
+    re.DOTALL,
+)
+
+
+def extract_email_context_from_content(
+    content: str, folder: str = "INBOX"
+) -> list[EmailContext]:
+    """Parse tool output and extract email references into structured context."""
+    contexts: list[EmailContext] = []
+    seen_uids: set[int] = set()
+
+    for match in EMAIL_LINE_PATTERN.finditer(content):
+        uid = int(match.group(1))
+        if uid in seen_uids:
+            continue
+        seen_uids.add(uid)
+
+        from_addr = match.group(2).strip().split("|")[0].strip()
+        subject = match.group(3).strip()[:100]
+        snippet = ""
+
+        contexts.append(
+            EmailContext(
+                uid=uid,
+                folder=folder,
+                from_addr=from_addr,
+                subject=subject,
+                snippet=snippet,
+            )
+        )
+
+    return contexts
+
+
+def format_email_context_for_prompt(email_context: list[EmailContext]) -> str:
+    """Format email context as a compact reference for the system prompt."""
+    if not email_context:
+        return "No emails currently in context."
+
+    lines = [f"Currently tracking {len(email_context)} email(s):"]
+    for ctx in email_context[:20]:
+        lines.append(
+            f"- [UID:{ctx['uid']}] From: {ctx['from_addr'][:30]} | {ctx['subject'][:50]}"
+        )
+
+    if len(email_context) > 20:
+        lines.append(f"  ... and {len(email_context) - 20} more")
+
+    return "\n".join(lines)
 
 
 def create_llm(config: ServerConfig) -> BaseChatModel:
@@ -155,11 +214,15 @@ def format_system_prompt(state: AssistantState) -> str:
     Returns:
         Formatted system prompt string
     """
+    email_context_summary = format_email_context_for_prompt(
+        state.get("email_context", [])
+    )
     return SYSTEM_PROMPT.format(
         user_email=state["user_email"],
         user_name=state["user_name"],
         timezone=state["timezone"],
         working_hours=state["working_hours"],
+        email_context_summary=email_context_summary,
     )
 
 
@@ -314,15 +377,21 @@ def batch_runner_node(state: AssistantState, config: RunnableConfig) -> dict[str
             "candidates", result.get("priority_emails", result.get("emails", []))
         )
         all_items.extend(new_items)
-        total_processed += result.get("processed_count", len(new_items))
-        total_estimate = (
-            result.get("total_available", total_estimate) or total_processed
-        )
+
+        processed_this_batch = result.get("processed_count", len(new_items))
+        total_processed += processed_this_batch
 
         has_more = result.get("has_more", False)
         continuation_state = result.get("continuation_state")
 
-        # Emit progress event
+        if "total_available" in result and result.get("total_available") is not None:
+            total_estimate = int(result.get("total_available"))
+        else:
+            total_estimate = max(
+                total_estimate,
+                total_processed + (processed_this_batch if has_more else 0),
+            )
+
         dispatch_custom_event(
             "batch_progress",
             {
@@ -365,19 +434,41 @@ def batch_runner_node(state: AssistantState, config: RunnableConfig) -> dict[str
 
     action_info = tool_actions.get(tool_name, {"action": "unknown"})
 
+    completion_payload = {
+        "tool": tool_name,
+        "status": "complete",
+        "total_items": len(all_items),
+        "processed_count": total_processed,
+        "iterations": iteration,
+        "uids": uids,
+        **action_info,
+    }
+
+    dispatch_custom_event(
+        "batch_complete",
+        completion_payload,
+        config=config,
+    )
+
     tool_result = ToolMessage(
         content=json.dumps(
-            {
-                "status": "complete",
-                "total_items": len(all_items),
-                "processed_count": total_processed,
-                "iterations": iteration,
-                "uids": uids,
-                **action_info,
-            }
+            {k: v for k, v in completion_payload.items() if k != "tool"}
         ),
         tool_call_id=batch_tool_call["id"],
     )
+
+    email_context: list[EmailContext] = []
+    for item in all_items[:50]:
+        if uid := item.get("uid"):
+            email_context.append(
+                EmailContext(
+                    uid=uid,
+                    folder=item.get("folder", "INBOX"),
+                    from_addr=str(item.get("from_addr", item.get("from", "")))[:50],
+                    subject=str(item.get("subject", ""))[:100],
+                    snippet=str(item.get("preview", item.get("snippet", "")))[:100],
+                )
+            )
 
     return {
         "messages": [tool_result],
@@ -387,6 +478,7 @@ def batch_runner_node(state: AssistantState, config: RunnableConfig) -> dict[str
         "batch_continuation_state": None,
         "batch_items": [],
         "batch_processed_count": 0,
+        "email_context": email_context,
     }
 
 
@@ -415,13 +507,28 @@ def create_assistant_graph(
     readonly_tools = get_readonly_tools()
     mutation_tools = get_mutation_tools()
 
-    readonly_node = ToolNode(readonly_tools)
+    _readonly_tool_node = ToolNode(readonly_tools)
     mutation_node = ToolNode(mutation_tools)
+
+    def readonly_node_with_context(state: AssistantState) -> dict[str, Any]:
+        """Wrapper that extracts email context from tool results."""
+        result = _readonly_tool_node.invoke(state)
+        messages = result.get("messages", [])
+
+        new_context: list[EmailContext] = []
+        for msg in messages:
+            if hasattr(msg, "content") and isinstance(msg.content, str):
+                extracted = extract_email_context_from_content(msg.content)
+                new_context.extend(extracted)
+
+        if new_context:
+            return {"messages": messages, "email_context": new_context}
+        return {"messages": messages}
 
     builder = StateGraph(AssistantState)
 
     builder.add_node("llm", llm_node)
-    builder.add_node("readonly_tools", readonly_node)
+    builder.add_node("readonly_tools", readonly_node_with_context)
     builder.add_node("mutation_tools", mutation_node)
     builder.add_node("batch_runner", batch_runner_node)
 

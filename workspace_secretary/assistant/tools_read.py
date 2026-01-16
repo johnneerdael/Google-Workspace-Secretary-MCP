@@ -538,12 +538,20 @@ def quick_clean_inbox(
 
     # Parse continuation state
     offset = 0
+    total_available = None
     if continuation_state:
         try:
             state = json.loads(continuation_state)
             offset = state.get("offset", 0)
+            total_available = state.get(
+                "total_available"
+            )  # Carry forward from first call
         except json.JSONDecodeError:
             pass
+
+    # Get total count on first call (offset=0)
+    if offset == 0:
+        total_available = email_queries.count_emails(ctx.db, folder)
 
     # Get emails from folder
     emails = email_queries.get_inbox_emails(
@@ -617,10 +625,15 @@ def quick_clean_inbox(
     has_more = processed_count >= limit and time.time() - start_time < timeout
     status = "partial" if has_more else "complete"
 
-    # Build continuation state
+    # Build continuation state with total_available for progress tracking
     new_continuation_state = None
     if has_more:
-        new_continuation_state = json.dumps({"offset": offset + processed_count})
+        new_continuation_state = json.dumps(
+            {
+                "offset": offset + processed_count,
+                "total_available": total_available,
+            }
+        )
 
     result = {
         "status": status,
@@ -628,6 +641,7 @@ def quick_clean_inbox(
         "has_more": has_more,
         "continuation_state": new_continuation_state,
         "processed_count": processed_count,
+        "total_available": total_available,
         "time_limit_reached": time.time() - start_time > timeout,
     }
 
@@ -658,16 +672,19 @@ def triage_priority_emails(
     start_time = time.time()
     timeout = 5.0
 
-    # Parse continuation state
     offset = 0
+    total_available = None
     if continuation_state:
         try:
             state = json.loads(continuation_state)
             offset = state.get("offset", 0)
+            total_available = state.get("total_available")
         except json.JSONDecodeError:
             pass
 
-    # Get unread emails
+    if offset == 0:
+        total_available = email_queries.count_emails(ctx.db, folder)
+
     emails = email_queries.get_inbox_emails(
         ctx.db, folder, limit, offset, unread_only=True
     )
@@ -738,7 +755,12 @@ def triage_priority_emails(
 
     new_continuation_state = None
     if has_more:
-        new_continuation_state = json.dumps({"offset": offset + processed_count})
+        new_continuation_state = json.dumps(
+            {
+                "offset": offset + processed_count,
+                "total_available": total_available,
+            }
+        )
 
     result = {
         "status": status,
@@ -746,6 +768,7 @@ def triage_priority_emails(
         "has_more": has_more,
         "continuation_state": new_continuation_state,
         "processed_count": processed_count,
+        "total_available": total_available,
     }
 
     return json.dumps(result, indent=2)
@@ -775,16 +798,19 @@ def triage_remaining_emails(
     start_time = time.time()
     timeout = 5.0
 
-    # Parse continuation state
     offset = 0
+    total_available = None
     if continuation_state:
         try:
             state = json.loads(continuation_state)
             offset = state.get("offset", 0)
+            total_available = state.get("total_available")
         except json.JSONDecodeError:
             pass
 
-    # Get unread emails
+    if offset == 0:
+        total_available = email_queries.count_emails(ctx.db, folder)
+
     emails = email_queries.get_inbox_emails(
         ctx.db, folder, limit, offset, unread_only=True
     )
@@ -835,7 +861,12 @@ def triage_remaining_emails(
 
     new_continuation_state = None
     if has_more:
-        new_continuation_state = json.dumps({"offset": offset + processed_count})
+        new_continuation_state = json.dumps(
+            {
+                "offset": offset + processed_count,
+                "total_available": total_available,
+            }
+        )
 
     result = {
         "status": status,
@@ -843,6 +874,7 @@ def triage_remaining_emails(
         "has_more": has_more,
         "continuation_state": new_continuation_state,
         "processed_count": processed_count,
+        "total_available": total_available,
     }
 
     return json.dumps(result, indent=2)

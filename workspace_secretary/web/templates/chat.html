@@ -341,11 +341,26 @@ async function sendMessage(event) {
                         } else if (event.type === 'batch_progress') {
                             showBatchProgress(event.tool, event.processed, event.total_estimate);
                         } else if (event.type === 'batch_complete') {
+                            // Always hide progress first
                             hideBatchProgress();
-                            if (event.items && event.items.length > 0) {
-                                showBatchApprovalDialog(event.items);
-                            } else if (event.uids && event.uids.length > 0) {
-                                renderActionButtons(event);
+                            
+                            // Check for UIDs (primary) or items (fallback)
+                            const uids = event.uids || [];
+                            const items = event.items || [];
+                            const totalItems = event.total_items || uids.length || items.length;
+                            
+                            if (uids.length > 0) {
+                                // Render action buttons with UIDs for execution
+                                renderActionButtons({
+                                    uids: uids,
+                                    total_items: totalItems,
+                                    action: event.action || 'archive',
+                                    target_folder: event.target_folder || 'Secretary/Auto-Cleaned',
+                                    description: event.description || `Found ${totalItems} emails ready to process`,
+                                });
+                            } else if (items.length > 0) {
+                                // Show approval dialog for items that need review
+                                showBatchApprovalDialog(items);
                             } else {
                                 fullContent += '\n✅ Batch scan complete. No items found matching criteria.';
                                 if (!assistantDiv) assistantDiv = addMessage('assistant', '');
@@ -498,11 +513,11 @@ async function rejectAction(btn) {
 
 async function clearChat() {
     try {
-        await fetch('/api/chat/clear', { method: 'POST' });
-        messagesContainer.innerHTML = '';
-        if (emptyState) {
-            emptyState.style.display = 'block';
-            messagesContainer.appendChild(emptyState);
+        const response = await fetch('/api/chat/new-session', { method: 'POST' });
+        if (response.ok) {
+            window.location.reload();
+        } else {
+            console.error('Failed to create new session');
         }
     } catch (error) {
         console.error('Failed to clear chat:', error);
@@ -558,9 +573,9 @@ function showBatchProgress(title, processed, total) {
     
     container.classList.remove('hidden');
     titleEl.textContent = title;
-    const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
+    const pct = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
     barEl.style.width = pct + '%';
-    textEl.textContent = `${processed} / ${total} processed`;
+    textEl.textContent = `${processed} / ${total} items`;
 }
 
 function hideBatchProgress() {
