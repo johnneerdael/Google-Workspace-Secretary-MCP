@@ -387,7 +387,8 @@ async function sendMessage(event) {
 
 function sendSuggestion(text) {
     messageInput.value = text;
-    chatForm.dispatchEvent(new Event('submit'));
+    // Call sendMessage directly - dispatchEvent('submit') is deprecated
+    sendMessage(new Event('submit'));
 }
 
 function showApprovalDialog(tool, args) {
@@ -540,7 +541,8 @@ function runQuickAction(action) {
     const prompt = prompts[action];
     if (prompt) {
         messageInput.value = prompt;
-        chatForm.dispatchEvent(new Event('submit'));
+        // Call sendMessage directly - dispatchEvent('submit') is deprecated
+        sendMessage(new Event('submit'));
     }
 }
 
