@@ -106,7 +106,7 @@
         <div>
             <h3 class="h2 mb-2">Calendars</h3>
             <div class="space-y-2">
-                <template x-for="calendar in allCalendars" :key="calendar.id">
+                <template x-for="calendar in (allCalendars || [])" :key="calendar.id">
                     <label class="flex items-center space-x-2 cursor-pointer">
                         <input type="checkbox" 
                                x-model="visibleCalendars" 
@@ -458,7 +458,7 @@
                                     Attendees (<span x-text="selectedEvent?.attendees?.length || 0"></span>)
                                 </div>
                                 <div class="space-y-2">
-                                    <template x-for="attendee in selectedEvent?.attendees || []" :key="attendee.email">
+                                    <template x-for="attendee in (selectedEvent?.attendees || [])" :key="attendee.email">
                                         <div class="flex items-center justify-between text-sm">
                                             <div>
                                                 <span class="text-body" x-text="attendee.displayName || attendee.email"></span>
@@ -528,7 +528,10 @@
                     <button @click="showCreateEvent = false" class="text-muted hover:text-body p-1 rounded-md hover:bg-surface-subtle">✕</button>
                 </div>
                 
-                <form class="p-6 space-y-4 overflow-y-auto" 
+                <form class="p-6 space-y-4 overflow-y-auto"
+                      method="post"
+                      action="/calendar/api/create-event"
+                      x-init="window.htmx && window.htmx.process($el)"
                       hx-post="/calendar/api/create-event" 
                       hx-swap="none"
                       @htmx:after-request="showCreateEvent = false; window.location.reload()">
@@ -595,7 +598,7 @@
                         <div x-show="showAttendeeSuggestions && attendeeSuggestions.length > 0"
                              x-transition
                              class="absolute top-full left-0 mt-1 bg-surface border border-border rounded-lg shadow-xl z-20 w-full max-h-48 overflow-auto">
-                            <template x-for="contact in attendeeSuggestions" :key="contact.email">
+                            <template x-for="contact in (attendeeSuggestions || [])" :key="contact.email">
                                 <button type="button"
                                         @click="selectAttendee(contact)"
                                         class="w-full text-left px-4 py-2 text-sm text-body hover:bg-surface-subtle transition-colors">
@@ -730,7 +733,7 @@
                             Proposed Alternative Times
                         </label>
                         <div class="space-y-3">
-                            <template x-for="(slot, index) in proposedSlots" :key="index">
+                            <template x-for="(slot, index) in (proposedSlots || [])" :key="index">
                                 <div class="flex items-center gap-2">
                                     <input type="datetime-local" 
                                            x-model="slot.start"
@@ -850,7 +853,7 @@ function calendarPage() {
             const parts = String(value).split(",");
             const query = (parts[parts.length - 1] || "").trim();
 
-            if (query.length <= 2) {
+            if (query.length < 1) {
                 this.attendeeSuggestions = [];
                 this.showAttendeeSuggestions = false;
                 return;
