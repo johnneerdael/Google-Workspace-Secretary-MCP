@@ -63,10 +63,11 @@ async def inbox(
     per_page: int = Query(50, ge=10, le=100),
     folder: str = Query("INBOX"),
     unread_only: bool = Query(False),
+    label: str | None = Query(None),
     session: Session = Depends(require_auth),
 ):
     offset = (page - 1) * per_page
-    emails_raw = db.get_inbox_emails(folder, per_page + 1, offset, unread_only)
+    emails_raw = db.get_inbox_emails(folder, per_page + 1, offset, unread_only, label)
 
     has_more = len(emails_raw) > per_page
     emails_raw = emails_raw[:per_page]
@@ -97,6 +98,7 @@ async def inbox(
             has_more=has_more,
             folder=folder,
             unread_only=unread_only,
+            label=label,
         ),
     )
 
@@ -108,10 +110,11 @@ async def emails_partial(
     per_page: int = Query(50, ge=10, le=100),
     folder: str = Query("INBOX"),
     unread_only: bool = Query(False),
+    label: str | None = Query(None),
     session: Session = Depends(require_auth),
 ):
     offset = (page - 1) * per_page
-    emails_raw = db.get_inbox_emails(folder, per_page + 1, offset, unread_only)
+    emails_raw = db.get_inbox_emails(folder, per_page + 1, offset, unread_only, label)
 
     has_more = len(emails_raw) > per_page
     emails_raw = emails_raw[:per_page]
@@ -134,7 +137,9 @@ async def emails_partial(
 
     return templates.TemplateResponse(
         "partials/email_list.html",
-        get_template_context(request, emails=emails, page=page, has_more=has_more),
+        get_template_context(
+            request, emails=emails, page=page, has_more=has_more, label=label
+        ),
     )
 
 
@@ -145,10 +150,11 @@ async def inbox_more(
     per_page: int = Query(50, ge=10, le=100),
     folder: str = Query("INBOX"),
     unread_only: bool = Query(False),
+    label: str | None = Query(None),
     session: Session = Depends(require_auth),
 ):
     offset = (page - 1) * per_page
-    emails_raw = db.get_inbox_emails(folder, per_page + 1, offset, unread_only)
+    emails_raw = db.get_inbox_emails(folder, per_page + 1, offset, unread_only, label)
 
     has_more = len(emails_raw) > per_page
     emails_raw = emails_raw[:per_page]

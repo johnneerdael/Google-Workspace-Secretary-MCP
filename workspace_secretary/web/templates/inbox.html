@@ -6,8 +6,55 @@
     ...bulkActions(),
     showTasks: false,
     showAddTask: false,
+    showLabelSidebar: false,
     newTask: { description: '', priority: 'medium', due_date: '' }
 }" @open-add-task.window="showAddTask = true">
+    
+    <div class="hidden lg:block w-56 flex-shrink-0">
+        <div class="card sticky top-4 p-4 space-y-4">
+            <h3 class="text-sm font-medium text-body">Folders</h3>
+            <nav class="space-y-1">
+                <a href="/inbox" class="flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors {% if not label %}bg-primary/10 text-primary{% else %}text-muted hover:bg-surface-subtle hover:text-body{% endif %}">
+                    <span>📥</span> Inbox
+                </a>
+            </nav>
+            
+            <h3 class="text-sm font-medium text-body pt-2">Secretary Labels</h3>
+            <nav class="space-y-1">
+                <a href="/inbox?label=Secretary/Priority" class="flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors {% if label == 'Secretary/Priority' %}bg-primary/10 text-primary{% else %}text-muted hover:bg-surface-subtle hover:text-body{% endif %}">
+                    <span>🔴</span> Priority
+                </a>
+                <a href="/inbox?label=Secretary/Action-Required" class="flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors {% if label == 'Secretary/Action-Required' %}bg-primary/10 text-primary{% else %}text-muted hover:bg-surface-subtle hover:text-body{% endif %}">
+                    <span>⚡</span> Action Required
+                </a>
+                <a href="/inbox?label=Secretary/Waiting" class="flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors {% if label == 'Secretary/Waiting' %}bg-primary/10 text-primary{% else %}text-muted hover:bg-surface-subtle hover:text-body{% endif %}">
+                    <span>⏳</span> Waiting
+                </a>
+                <a href="/inbox?label=Secretary/Drafts" class="flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors {% if label == 'Secretary/Drafts' %}bg-primary/10 text-primary{% else %}text-muted hover:bg-surface-subtle hover:text-body{% endif %}">
+                    <span>✏️</span> Drafts
+                </a>
+                <a href="/inbox?label=Secretary/Calendar" class="flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors {% if label == 'Secretary/Calendar' %}bg-primary/10 text-primary{% else %}text-muted hover:bg-surface-subtle hover:text-body{% endif %}">
+                    <span>📅</span> Calendar
+                </a>
+                <a href="/inbox?label=Secretary/Processed" class="flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors {% if label == 'Secretary/Processed' %}bg-primary/10 text-primary{% else %}text-muted hover:bg-surface-subtle hover:text-body{% endif %}">
+                    <span>✅</span> Processed
+                </a>
+                <a href="/inbox?label=Secretary/Newsletter" class="flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors {% if label == 'Secretary/Newsletter' %}bg-primary/10 text-primary{% else %}text-muted hover:bg-surface-subtle hover:text-body{% endif %}">
+                    <span>📰</span> Newsletters
+                </a>
+                <a href="/inbox?label=Secretary/Auto-Cleaned" class="flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors {% if label == 'Secretary/Auto-Cleaned' %}bg-primary/10 text-primary{% else %}text-muted hover:bg-surface-subtle hover:text-body{% endif %}">
+                    <span>🧹</span> Auto-Cleaned
+                </a>
+            </nav>
+        </div>
+    </div>
+    
+    <button @click="showLabelSidebar = true"
+            class="lg:hidden fixed bottom-20 left-4 z-30 w-12 h-12 bg-primary text-white rounded-full shadow-lg flex items-center justify-center"
+            title="Show labels">
+        🏷️
+    </button>
+
     <div class="flex-1 space-y-4 min-w-0">
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <h1 class="h1">Inbox</h1>
@@ -230,6 +277,54 @@
                 <div class="h-8 bg-surface-subtle rounded"></div>
                 <div class="h-8 bg-surface-subtle rounded"></div>
                 <div class="h-8 bg-surface-subtle rounded"></div>
+            </div>
+        </div>
+    </div>
+    
+    <div x-show="showLabelSidebar" x-cloak 
+         class="lg:hidden fixed inset-0 z-40 bg-black/50"
+         @click="showLabelSidebar = false">
+        <div class="absolute left-0 top-0 bottom-0 w-64 max-w-full bg-surface overflow-y-auto"
+             @click.stop>
+            <div class="p-4 border-b border-border flex items-center justify-between sticky top-0 bg-surface">
+                <h3 class="font-medium text-body">Labels</h3>
+                <button @click="showLabelSidebar = false" class="p-2 text-muted hover:text-body">✕</button>
+            </div>
+            <div class="p-4 space-y-4">
+                <h3 class="text-sm font-medium text-body">Folders</h3>
+                <nav class="space-y-1">
+                    <a href="/inbox" class="flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors {% if not label %}bg-primary/10 text-primary{% else %}text-muted hover:bg-surface-subtle hover:text-body{% endif %}">
+                        <span>📥</span> Inbox
+                    </a>
+                </nav>
+                
+                <h3 class="text-sm font-medium text-body pt-2">Secretary Labels</h3>
+                <nav class="space-y-1">
+                    <a href="/inbox?label=Secretary/Priority" class="flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors {% if label == 'Secretary/Priority' %}bg-primary/10 text-primary{% else %}text-muted hover:bg-surface-subtle hover:text-body{% endif %}">
+                        <span>🔴</span> Priority
+                    </a>
+                    <a href="/inbox?label=Secretary/Action-Required" class="flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors {% if label == 'Secretary/Action-Required' %}bg-primary/10 text-primary{% else %}text-muted hover:bg-surface-subtle hover:text-body{% endif %}">
+                        <span>⚡</span> Action Required
+                    </a>
+                    <a href="/inbox?label=Secretary/Waiting" class="flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors {% if label == 'Secretary/Waiting' %}bg-primary/10 text-primary{% else %}text-muted hover:bg-surface-subtle hover:text-body{% endif %}">
+                        <span>⏳</span> Waiting
+                    </a>
+                    <a href="/inbox?label=Secretary/Drafts" class="flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors {% if label == 'Secretary/Drafts' %}bg-primary/10 text-primary{% else %}text-muted hover:bg-surface-subtle hover:text-body{% endif %}">
+                        <span>✏️</span> Drafts
+                    </a>
+                    <a href="/inbox?label=Secretary/Calendar" class="flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors {% if label == 'Secretary/Calendar' %}bg-primary/10 text-primary{% else %}text-muted hover:bg-surface-subtle hover:text-body{% endif %}">
+                        <span>📅</span> Calendar
+                    </a>
+                    <a href="/inbox?label=Secretary/Processed" class="flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors {% if label == 'Secretary/Processed' %}bg-primary/10 text-primary{% else %}text-muted hover:bg-surface-subtle hover:text-body{% endif %}">
+                        <span>✅</span> Processed
+                    </a>
+                    <a href="/inbox?label=Secretary/Newsletter" class="flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors {% if label == 'Secretary/Newsletter' %}bg-primary/10 text-primary{% else %}text-muted hover:bg-surface-subtle hover:text-body{% endif %}">
+                        <span>📰</span> Newsletters
+                    </a>
+                    <a href="/inbox?label=Secretary/Auto-Cleaned" class="flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors {% if label == 'Secretary/Auto-Cleaned' %}bg-primary/10 text-primary{% else %}text-muted hover:bg-surface-subtle hover:text-body{% endif %}">
+                        <span>🧹</span> Auto-Cleaned
+                    </a>
+                </nav>
             </div>
         </div>
     </div>

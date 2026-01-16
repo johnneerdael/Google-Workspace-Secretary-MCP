@@ -128,17 +128,31 @@
         
         <div>
             <h3 class="h2 mb-2">Timezone</h3>
-            <div class="text-xs text-muted mb-2">Primary: Europe/Amsterdam (CET/CEST)</div>
-            <select x-model="secondaryTimezone" 
-                    class="input-field text-sm">
-                <option value="">No secondary timezone</option>
-                <option value="America/New_York">New York (EST/EDT)</option>
-                <option value="America/Los_Angeles">Los Angeles (PST/PDT)</option>
-                <option value="Europe/London">London (GMT/BST)</option>
-                <option value="Asia/Tokyo">Tokyo (JST)</option>
-                <option value="Asia/Singapore">Singapore (SGT)</option>
-                <option value="Australia/Sydney">Sydney (AEDT/AEST)</option>
-            </select>
+            <div class="text-xs text-muted mb-2">Primary: Europe/Amsterdam 🇳🇱</div>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-xs text-muted mb-1">Secondary</label>
+                    <select x-model="secondaryTimezone" @change="saveTimezonePrefs()"
+                            class="input-field text-sm w-full">
+                        <option value="">None</option>
+                        <option value="Asia/Kolkata">🇮🇳 Mumbai</option>
+                        <option value="Asia/Taipei">🇹🇼 Taipei</option>
+                        <option value="America/New_York">🇺🇸 Boston</option>
+                        <option value="America/Los_Angeles">🇺🇸 San Francisco</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs text-muted mb-1">Tertiary</label>
+                    <select x-model="tertiaryTimezone" @change="saveTimezonePrefs()"
+                            class="input-field text-sm w-full">
+                        <option value="">None</option>
+                        <option value="Asia/Kolkata">🇮🇳 Mumbai</option>
+                        <option value="Asia/Taipei">🇹🇼 Taipei</option>
+                        <option value="America/New_York">🇺🇸 Boston</option>
+                        <option value="America/Los_Angeles">🇺🇸 San Francisco</option>
+                    </select>
+                </div>
+            </div>
         </div>
         
         <div>
@@ -268,9 +282,15 @@
     
     {% elif view == 'agenda' %}
     <div class="space-y-4">
+        {% if current_date and current_time %}
+        <div class="text-xs text-muted flex items-center gap-2">
+            <span class="inline-block w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+            Current time: {{ current_time }} 🇳🇱
+        </div>
+        {% endif %}
         {% for date, events_list in grouped_events.items() %}
         <div class="card p-0 overflow-hidden">
-            <div class="bg-surface-subtle px-4 py-2 border-b border-border">
+            <div class="bg-surface-subtle px-4 py-2 border-b border-border flex items-center justify-between">
                 <span class="text-sm font-medium text-body">
                     {% set first_event = events_list[0] %}
                     {% if first_event.start.dateTime %}
@@ -279,6 +299,9 @@
                     {{ first_event.start.date | strftime('%A, %B %d, %Y') }}
                     {% endif %}
                 </span>
+                {% if date == current_date %}
+                <span class="text-xs px-2 py-0.5 rounded bg-green-900/30 text-green-400 border border-green-700/50">Today</span>
+                {% endif %}
             </div>
             <div class="divide-y divide-border">
                 {% for event in events_list %}
@@ -305,12 +328,22 @@
                             <div class="text-sm text-muted mt-1">{{ event.attendees|length }} attendees</div>
                             {% endif %}
                         </div>
-                        <div class="text-sm text-muted ml-4">
+                        <div class="text-sm text-muted ml-4 text-right">
                             {% if event.start.dateTime %}
-                            {{ event.start.dateTime[11:16] }}
-                            {% if event.end.dateTime %}
-                            - {{ event.end.dateTime[11:16] }}
-                            {% endif %}
+                            <div class="flex items-center gap-1">
+                                <span>🇳🇱</span>
+                                <span>{{ event.start.dateTime[11:16] }}</span>
+                                {% if event.end.dateTime %}
+                                <span>-</span>
+                                <span>{{ event.end.dateTime[11:16] }}</span>
+                                {% endif %}
+                            </div>
+                            <template x-if="secondaryTimezone">
+                                <div class="text-xs mt-1" x-text="formatTimeInZone('{{ event.start.dateTime }}', secondaryTimezone)"></div>
+                            </template>
+                            <template x-if="tertiaryTimezone">
+                                <div class="text-xs" x-text="formatTimeInZone('{{ event.start.dateTime }}', tertiaryTimezone)"></div>
+                            </template>
                             {% elif event.start.date %}
                             🌅 All Day
                             {% endif %}
@@ -816,6 +849,7 @@ function calendarPage() {
         visibleCalendars: [],
         allCalendars: [],
         secondaryTimezone: null,
+        tertiaryTimezone: null,
         showWorkingHours: true,
         conferenceSolutions: [],
         conferenceSolutionsLoaded: false,
@@ -823,6 +857,13 @@ function calendarPage() {
         attendeeSuggestions: [],
         showAttendeeSuggestions: false,
         savingCalendarSettings: false,
+        timezoneFlags: {
+            'Asia/Kolkata': '🇮🇳',
+            'Asia/Taipei': '🇹🇼',
+            'America/New_York': '🇺🇸',
+            'America/Los_Angeles': '🇺🇸',
+            'Europe/Amsterdam': '🇳🇱'
+        },
         init() {
             this.visibleCalendars = parseCalendarJson(
                 this.$el.dataset.selectedCalendarIds,
@@ -834,6 +875,14 @@ function calendarPage() {
             }
             if (!Array.isArray(this.allCalendars)) {
                 this.allCalendars = [];
+            }
+            const savedTz = localStorage.getItem('calendar_timezones');
+            if (savedTz) {
+                try {
+                    const parsed = JSON.parse(savedTz);
+                    this.secondaryTimezone = parsed.secondary || null;
+                    this.tertiaryTimezone = parsed.tertiary || null;
+                } catch {}
             }
             fetch("/api/calendar/conference-solutions")
                 .then((response) => (response.ok ? response.json() : null))
@@ -911,6 +960,28 @@ function calendarPage() {
                 }
             } finally {
                 this.savingCalendarSettings = false;
+            }
+        },
+        saveTimezonePrefs() {
+            localStorage.setItem('calendar_timezones', JSON.stringify({
+                secondary: this.secondaryTimezone || null,
+                tertiary: this.tertiaryTimezone || null
+            }));
+        },
+        formatTimeInZone(isoString, timezone) {
+            if (!isoString || !timezone) return '';
+            try {
+                const date = new Date(isoString);
+                const flag = this.timezoneFlags[timezone] || '';
+                const time = date.toLocaleTimeString('en-US', {
+                    timeZone: timezone,
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: false
+                });
+                return `${flag} ${time}`;
+            } catch {
+                return '';
             }
         },
         async openEventDetail(eventPayload) {

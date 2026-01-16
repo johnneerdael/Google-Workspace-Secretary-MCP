@@ -175,7 +175,7 @@ async def get_conference_solutions(
 @router.get("/calendar", response_class=HTMLResponse)
 async def calendar_view(
     request: Request,
-    view: str = Query("week"),
+    view: str = Query("agenda"),
     week_offset: int = Query(0),
     day_offset: int = Query(0),
     month_offset: int = Query(0),
@@ -354,8 +354,28 @@ async def calendar_view(
     elif view == "agenda":
         sorted_events = sorted(events, key=_get_event_date)
         grouped_events = {}
+        now_iso = now.isoformat()
+        today_str = now.strftime("%Y-%m-%d")
+
         for event in sorted_events:
             event_date = _get_event_date(event)
+
+            if event_date == today_str:
+                end_info = event.get("end", {})
+                end_time = end_info.get("dateTime") or end_info.get("date")
+                if end_time:
+                    end_normalized = end_time.replace("Z", "+00:00")
+                    if "T" not in end_normalized:
+                        end_normalized = f"{end_normalized}T23:59:59+00:00"
+                    try:
+                        end_dt = datetime.fromisoformat(end_normalized)
+                        if end_dt.tzinfo:
+                            end_dt = end_dt.replace(tzinfo=None)
+                        if end_dt < now:
+                            continue
+                    except ValueError:
+                        pass
+
             if event_date not in grouped_events:
                 grouped_events[event_date] = []
             grouped_events[event_date].append(event)
@@ -363,6 +383,8 @@ async def calendar_view(
         context.update(
             {
                 "grouped_events": grouped_events,
+                "current_time": now.strftime("%H:%M"),
+                "current_date": today_str,
             }
         )
     else:

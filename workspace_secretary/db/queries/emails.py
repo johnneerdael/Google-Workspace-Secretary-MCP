@@ -414,23 +414,50 @@ def get_inbox_emails(
     limit: int,
     offset: int,
     unread_only: bool = False,
+    label: Optional[str] = None,
 ) -> list[dict[str, Any]]:
-    """Get inbox emails with preview for list view."""
-    sql = """
+    """Get inbox emails with preview for list view.
+
+    Args:
+        db: Database interface
+        folder: IMAP folder name (ignored if label is specified)
+        limit: Max emails to return
+        offset: Pagination offset
+        unread_only: Only return unread emails
+        label: Gmail label to filter by (e.g., "Secretary/Priority")
+    """
+    # Build filter conditions
+    filters = []
+    params: list[Any] = []
+
+    if label:
+        # Filter by Gmail label (stored as JSON array)
+        filters.append("gmail_labels::jsonb ? %s")
+        params.append(label)
+    else:
+        # Filter by folder
+        filters.append("folder = %s")
+        params.append(folder)
+
+    if unread_only:
+        filters.append("is_unread = true")
+
+    where_clause = " AND ".join(filters)
+
+    sql = f"""
         SELECT uid, folder, from_addr, subject, 
                LEFT(body_text, 200) as preview, date, is_unread, has_attachments,
                gmail_labels
         FROM emails 
-        WHERE folder = %s {unread_filter}
+        WHERE {where_clause}
         ORDER BY date DESC 
         LIMIT %s OFFSET %s
     """
-    unread_filter = "AND is_unread = true" if unread_only else ""
-    sql = sql.format(unread_filter=unread_filter)
+    params.extend([limit, offset])
 
     with db.connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(sql, (folder, limit, offset))
+            cur.execute(sql, params)
             return cur.fetchall()
 
 

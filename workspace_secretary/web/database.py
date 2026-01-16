@@ -77,9 +77,13 @@ def get_pool():
 
 
 def get_inbox_emails(
-    folder: str, limit: int, offset: int, unread_only: bool = False
+    folder: str,
+    limit: int,
+    offset: int,
+    unread_only: bool = False,
+    label: str | None = None,
 ) -> list[dict]:
-    return email_q.get_inbox_emails(get_db(), folder, limit, offset, unread_only)
+    return email_q.get_inbox_emails(get_db(), folder, limit, offset, unread_only, label)
 
 
 def get_email(uid: int, folder: str) -> Optional[dict]:

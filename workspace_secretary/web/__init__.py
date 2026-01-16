@@ -176,6 +176,19 @@ def get_template_context(request: Request, **kwargs) -> dict:
 
     csrf_token = request.cookies.get(CSRF_COOKIE)
 
+    # Auto-detect current page from URL path for nav highlighting
+    path = request.url.path.strip("/").split("/")[0] if request.url.path else ""
+    current_page = path if path else "inbox"
+    # Map some paths to their canonical nav names
+    page_mapping = {
+        "": "inbox",
+        "thread": "inbox",
+        "compose": "inbox",
+        "dashboard": "inbox",
+        "admin": "settings",
+    }
+    current_page = page_mapping.get(current_page, current_page)
+
     return {
         "request": request,
         "theme": theme,
@@ -184,6 +197,7 @@ def get_template_context(request: Request, **kwargs) -> dict:
         "user_name": session.name if session else None,
         "user_email": session.email if session else None,
         "csrf_token": csrf_token,
+        "current_page": current_page,
         **kwargs,
     }
 

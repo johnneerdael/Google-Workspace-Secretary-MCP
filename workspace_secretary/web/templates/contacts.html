@@ -55,22 +55,6 @@
                 {% endif %}
             </div>
         </div>
-
-        <button 
-            hx-post="/api/contacts/sync?limit=1000"
-            hx-swap="none"
-            hx-indicator="#sync-spinner"
-            hx-on::before-request="window.dispatchEvent(new CustomEvent('contactsSyncStart'))"
-            hx-on::after-request="const response = JSON.parse(event.detail.xhr.response); window.dispatchEvent(new CustomEvent('contactsSyncComplete', { detail: { success: response.success } })); if(response.success) setTimeout(() => window.location.reload(), 500);"
-            class="w-full btn-primary flex items-center justify-center gap-2">
-            <span id="sync-spinner" class="htmx-indicator">
-                <svg class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-            </span>
-            <span>Sync Contacts</span>
-        </button>
     </div>
 
     <div class="lg:col-span-3 space-y-4">
@@ -128,7 +112,7 @@
                     {% include "partials/empty_state.html" %}
                 {% endwith %}
             {% else %}
-                {% with icon="👥", title="No contacts yet", description="Click 'Sync Contacts' to extract contacts from your emails." %}
+                {% with icon="👥", title="No contacts yet", description="Contacts are synced automatically from your emails." %}
                     {% include "partials/empty_state.html" %}
                 {% endwith %}
             {% endif %}

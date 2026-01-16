@@ -130,6 +130,7 @@ class EngineState:
         self.embeddings_task: Optional[asyncio.Task] = None
         self.enrollment_task: Optional[asyncio.Task] = None
         self.heartbeat_task: Optional[asyncio.Task] = None
+        self.contact_sync_task: Optional[asyncio.Task] = None
         self.running = False
         self.enrolled = False
         self.enrollment_error: Optional[str] = None
@@ -518,6 +519,33 @@ async def imap_heartbeat_loop():
             logger.error(f"Heartbeat error: {e}")
 
 
+async def _trigger_contact_sync():
+    """Trigger contact sync from emails. Runs in background after IMAP sync."""
+    try:
+        import httpx
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "http://localhost:8090/api/contacts/sync?limit=1000", timeout=120.0
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                logger.info(
+                    f"Contact sync completed: {data.get('contacts_synced', 0)} contacts synced"
+                )
+            else:
+                logger.warning(f"Contact sync returned status {resp.status_code}")
+    except Exception as e:
+        logger.error(f"Contact sync failed: {e}")
+
+
+async def _contact_sync_scheduler():
+    """Run incremental contact sync every 24 hours."""
+    while state.running:
+        await asyncio.sleep(86400)
+        await _trigger_contact_sync()
+
+
 async def sync_loop():
     """Background sync loop for email and calendar.
 
@@ -549,6 +577,11 @@ async def sync_loop():
                     logger.info("Running initial lockstep sync+embed...")
                     await initial_lockstep_sync_and_embed()
                     initial_sync_done = True
+
+                    asyncio.create_task(_trigger_contact_sync())
+                    state.contact_sync_task = asyncio.create_task(
+                        _contact_sync_scheduler()
+                    )
 
                     if state.database.supports_embeddings():
                         logger.info(
