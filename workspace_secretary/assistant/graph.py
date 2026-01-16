@@ -12,6 +12,7 @@ from typing import Any, Literal, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_anthropic import ChatAnthropic
 from langchain_openai import ChatOpenAI
@@ -133,7 +134,7 @@ def format_system_prompt(state: AssistantState) -> str:
     )
 
 
-def llm_node(state: AssistantState, config: dict) -> dict[str, Any]:
+def llm_node(state: AssistantState, config: RunnableConfig) -> dict[str, Any]:
     """LLM reasoning node that generates responses and tool calls.
 
     Args:
