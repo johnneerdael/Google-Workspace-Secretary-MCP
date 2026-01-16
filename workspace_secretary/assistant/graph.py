@@ -365,7 +365,11 @@ def get_pending_mutation(thread_id: str) -> Optional[dict[str, Any]]:
     config = {"configurable": {"thread_id": thread_id}}
 
     # Get current state from checkpointer
-    state = graph.get_state(config)
+    try:
+        state = graph.get_state(config)
+    except ValueError:
+        # No checkpointer set
+        return None
 
     if state and state.values:
         messages = state.values.get("messages", [])
@@ -379,7 +383,9 @@ def get_pending_mutation(thread_id: str) -> Optional[dict[str, Any]]:
     return None
 
 
-def reject_mutation(thread_id: str, reason: str = "User declined") -> AssistantState:
+def reject_mutation(
+    thread_id: str, reason: str = "User declined"
+) -> Optional[AssistantState]:
     """Reject a pending mutation and add rejection message.
 
     Args:
@@ -387,14 +393,18 @@ def reject_mutation(thread_id: str, reason: str = "User declined") -> AssistantS
         reason: Rejection reason to add to conversation
 
     Returns:
-        Updated state with rejection message
+        Updated state with rejection message, or None if no checkpointer
     """
     graph = get_graph()
 
     config = {"configurable": {"thread_id": thread_id}}
 
     # Get current state
-    state = graph.get_state(config)
+    try:
+        state = graph.get_state(config)
+    except ValueError:
+        # No checkpointer set
+        return None
 
     if state and state.values:
         messages = list(state.values.get("messages", []))
