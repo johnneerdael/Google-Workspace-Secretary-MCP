@@ -34,9 +34,11 @@ from workspace_secretary.assistant.streaming import (
     format_sse_events,
     format_error_sse,
     format_interrupt_sse,
+    format_batch_progress_sse,
+    format_batch_complete_sse,
     extract_final_response,
 )
-from workspace_secretary.assistant.tool_registry import is_mutation_tool
+from workspace_secretary.assistant.tool_registry import is_mutation_tool, is_batch_tool
 from workspace_secretary.config import ServerConfig
 
 logger = logging.getLogger(__name__)
@@ -409,3 +411,117 @@ async def get_conversation_starters(
 ):
     """Get conversation starter suggestions."""
     return {"starters": get_starters()}
+
+
+@router.post("/api/chat/batch/cancel")
+async def cancel_batch(
+    request: Request,
+    session: Session = Depends(require_auth),
+):
+    """Cancel an ongoing batch operation."""
+    from workspace_secretary.web.routes.analysis import get_config
+
+    config = get_config()
+    if not config:
+        return {"error": "Server configuration not available"}
+
+    _ensure_graph_initialized(config)
+    thread_id = _get_thread_id(session)
+
+    try:
+        graph = get_graph()
+        state = graph.get_state({"configurable": {"thread_id": thread_id}})
+
+        if state and state.values.get("batch_status") == "running":
+            graph.update_state(
+                {"configurable": {"thread_id": thread_id}},
+                {"batch_cancel_requested": True},
+            )
+            return {"status": "cancelling", "message": "Batch cancellation requested"}
+
+        return {"status": "no_batch", "message": "No active batch operation"}
+    except Exception as e:
+        logger.exception(f"Error cancelling batch: {e}")
+        return {"error": str(e)}
+
+
+@router.post("/api/chat/batch/approve")
+async def approve_batch(
+    request: Request,
+    session: Session = Depends(require_auth),
+):
+    """Approve batch operation results and execute."""
+    from workspace_secretary.web.routes.analysis import get_config
+    from workspace_secretary.assistant.tools_mutation import (
+        execute_clean_batch,
+        process_email,
+    )
+    from workspace_secretary.assistant.context import get_context
+
+    config = get_config()
+    if not config:
+        return {"error": "Server configuration not available"}
+
+    _ensure_graph_initialized(config)
+
+    form = await request.form()
+    approved_uids_json = str(form.get("uids", "[]"))
+    action = str(form.get("action", "archive"))
+    source_folder = str(form.get("folder", "INBOX"))
+
+    try:
+        approved_uids = json.loads(approved_uids_json) if approved_uids_json else []
+    except json.JSONDecodeError:
+        return {"error": "Invalid UIDs format"}
+
+    if not approved_uids:
+        return {"error": "No items selected for approval"}
+
+    async def generate():
+        try:
+            yield f"data: {json.dumps({'type': 'batch_execute_start', 'count': len(approved_uids)})}\n\n"
+
+            ctx = get_context()
+            success_count = 0
+            error_count = 0
+
+            for uid in approved_uids:
+                try:
+                    if action == "archive":
+                        ctx.engine.move_email(
+                            uid, source_folder, "Secretary/Auto-Cleaned"
+                        )
+                        ctx.engine.mark_read(uid, "Secretary/Auto-Cleaned")
+                    elif action == "mark_read":
+                        ctx.engine.mark_read(uid, source_folder)
+                    elif action == "delete":
+                        ctx.engine.move_email(uid, source_folder, "[Gmail]/Trash")
+                    success_count += 1
+                except Exception as e:
+                    error_count += 1
+                    logger.warning(f"Failed to process email {uid}: {e}")
+
+                if (success_count + error_count) % 10 == 0:
+                    yield f"data: {json.dumps({'type': 'batch_execute_progress', 'processed': success_count + error_count, 'total': len(approved_uids)})}\n\n"
+
+            yield f"data: {json.dumps({'type': 'batch_execute_complete', 'success': success_count, 'errors': error_count})}\n\n"
+            yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            logger.exception(f"Batch execute error: {e}")
+            yield format_error_sse(str(e))
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+def group_items_by_confidence(items: list[dict]) -> dict[str, list[dict]]:
+    """Group batch items by confidence level for tiered approval."""
+    grouped = {"high": [], "medium": [], "low": []}
+    for item in items:
+        confidence = item.get("confidence", "medium")
+        if confidence in grouped:
+            grouped[confidence].append(item)
+        else:
+            grouped["medium"].append(item)
+    return grouped

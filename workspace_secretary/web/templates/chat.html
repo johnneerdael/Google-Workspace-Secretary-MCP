@@ -9,12 +9,24 @@
             <span class="text-2xl">🤖</span>
             <h1 class="text-lg font-semibold text-default">AI Assistant</h1>
         </div>
-        <button 
-            onclick="clearChat()"
-            class="px-3 py-1.5 text-sm text-muted hover:text-default hover:bg-surface-hover rounded-lg transition-colors"
-        >
-            Clear Chat
-        </button>
+        <div class="flex items-center gap-2">
+            <button onclick="runQuickAction('clean')" class="quick-action-btn" title="Clean inbox">
+                🧹 Clean
+            </button>
+            <button onclick="runQuickAction('priority')" class="quick-action-btn" title="Triage priority">
+                ⚡ Priority
+            </button>
+            <button onclick="runQuickAction('briefing')" class="quick-action-btn" title="Morning briefing">
+                📬 Briefing
+            </button>
+            <div class="w-px h-6 bg-border mx-1"></div>
+            <button 
+                onclick="clearChat()"
+                class="px-3 py-1.5 text-sm text-muted hover:text-default hover:bg-surface-hover rounded-lg transition-colors"
+            >
+                Clear
+            </button>
+        </div>
     </div>
 
     <div id="chat-messages" class="flex-1 overflow-y-auto px-6 py-4 space-y-4 bg-canvas">
@@ -36,32 +48,44 @@
                 <button onclick="sendSuggestion('Are there any urgent emails I should respond to?')" class="suggestion-btn">
                     🚨 Urgent emails
                 </button>
-            </div>
         </div>
     </div>
+</div>
 
-    <div class="border-t border-border px-6 py-4">
-        <form id="chat-form" onsubmit="sendMessage(event)" class="flex gap-3">
-            <input 
-                type="text" 
-                id="message-input"
-                name="message"
-                placeholder="Ask about your emails, calendar, or request help..."
-                class="input-field flex-1"
-                autocomplete="off"
-            >
-            <button 
-                type="submit"
-                id="send-btn"
-                class="btn-primary px-6 py-3 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-                Send
+<div id="batch-progress" class="hidden fixed bottom-24 right-6 bg-surface border border-border rounded-lg shadow-lg p-4 w-80 z-50">
+    <div class="flex justify-between items-center mb-2">
+        <span class="font-medium text-default" id="batch-progress-title">Processing...</span>
+        <button onclick="cancelBatch()" class="text-muted hover:text-error text-sm">Cancel</button>
+    </div>
+    <div class="w-full bg-surface-dim rounded-full h-2">
+        <div id="batch-progress-bar" class="bg-primary h-2 rounded-full transition-all" style="width: 0%"></div>
+    </div>
+    <div class="text-xs text-muted mt-1" id="batch-progress-text">0 / 0 processed</div>
+</div>
+
+<div id="batch-approval-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+    <div class="bg-surface border border-border rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden">
+        <div class="px-6 py-4 border-b border-border flex justify-between items-center">
+            <h2 class="text-lg font-semibold text-default">📧 Review Items</h2>
+            <button onclick="closeBatchApproval()" class="text-muted hover:text-default">&times;</button>
+        </div>
+        <div id="batch-approval-content" class="p-6 overflow-y-auto max-h-[60vh]"></div>
+        <div class="px-6 py-4 border-t border-border flex justify-end gap-3">
+            <button onclick="closeBatchApproval()" class="px-4 py-2 text-sm bg-surface-dim hover:bg-surface-hover rounded-lg border border-border">
+                Cancel
             </button>
-        </form>
+            <button onclick="executeApprovedBatch()" id="approve-batch-btn" class="btn-primary px-4 py-2 text-sm">
+                ✅ Approve Selected
+            </button>
+        </div>
     </div>
 </div>
 
 <style>
+.quick-action-btn {
+    @apply px-3 py-1.5 text-sm bg-surface-dim hover:bg-primary hover:text-primary-foreground rounded-lg transition-colors border border-border;
+}
+
 .suggestion-btn {
     @apply px-3 py-2 text-sm bg-surface-dim hover:bg-surface-hover text-muted-foreground rounded-lg transition-colors border border-border;
 }
@@ -259,6 +283,17 @@ async function sendMessage(event) {
                             assistantDiv.innerHTML = formatMarkdown(fullContent);
                         } else if (event.type === 'done') {
                             // Stream complete
+                        } else if (event.type === 'batch_progress') {
+                            showBatchProgress(event.tool, event.processed, event.total_estimate);
+                        } else if (event.type === 'batch_complete') {
+                            hideBatchProgress();
+                            if (event.items && event.items.length > 0) {
+                                showBatchApprovalDialog(event.items);
+                            } else {
+                                fullContent += '\n✅ Batch scan complete. No items found matching criteria.';
+                                if (!assistantDiv) assistantDiv = addMessage('assistant', '');
+                                assistantDiv.innerHTML = formatMarkdown(fullContent);
+                            }
                         } else if (typeof event === 'string') {
                             // Fallback for old format (plain string)
                             fullContent += event;
@@ -441,5 +476,194 @@ document.addEventListener('keydown', (e) => {
         messageInput.focus();
     }
 });
+
+let currentBatchItems = [];
+let selectedBatchUids = new Set();
+
+function runQuickAction(action) {
+    const prompts = {
+        'clean': 'Clean my inbox - identify emails I can safely archive using quick_clean_inbox',
+        'priority': 'Triage my inbox and identify priority emails using triage_priority_emails',
+        'briefing': 'Give me my morning briefing with unread emails and today\'s calendar'
+    };
+    
+    const prompt = prompts[action];
+    if (prompt) {
+        messageInput.value = prompt;
+        chatForm.dispatchEvent(new Event('submit'));
+    }
+}
+
+function showBatchProgress(title, processed, total) {
+    const container = document.getElementById('batch-progress');
+    const titleEl = document.getElementById('batch-progress-title');
+    const barEl = document.getElementById('batch-progress-bar');
+    const textEl = document.getElementById('batch-progress-text');
+    
+    container.classList.remove('hidden');
+    titleEl.textContent = title;
+    const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
+    barEl.style.width = pct + '%';
+    textEl.textContent = `${processed} / ${total} processed`;
+}
+
+function hideBatchProgress() {
+    document.getElementById('batch-progress').classList.add('hidden');
+}
+
+async function cancelBatch() {
+    try {
+        await fetch('/api/chat/batch/cancel', { method: 'POST' });
+        hideBatchProgress();
+        addMessage('assistant', '🛑 Batch operation cancelled.');
+    } catch (error) {
+        console.error('Failed to cancel batch:', error);
+    }
+}
+
+function showBatchApprovalDialog(items) {
+    currentBatchItems = items;
+    selectedBatchUids = new Set(items.map(i => i.uid));
+    
+    const grouped = { high: [], medium: [], low: [] };
+    items.forEach(item => {
+        const conf = item.confidence || 'medium';
+        if (grouped[conf]) grouped[conf].push(item);
+        else grouped.medium.push(item);
+    });
+    
+    let html = '';
+    
+    for (const [level, levelItems] of Object.entries(grouped)) {
+        if (levelItems.length === 0) continue;
+        
+        const icons = { high: '🟢', medium: '🟡', low: '🔴' };
+        const labels = { high: 'High Confidence', medium: 'Medium Confidence', low: 'Low Confidence' };
+        
+        html += `
+            <div class="mb-4">
+                <div class="flex items-center justify-between mb-2">
+                    <h3 class="font-medium text-default">${icons[level]} ${labels[level]} (${levelItems.length})</h3>
+                    <label class="text-sm text-muted">
+                        <input type="checkbox" checked onchange="toggleConfidenceLevel('${level}', this.checked)" class="mr-1">
+                        Select all
+                    </label>
+                </div>
+                <div class="space-y-2 max-h-48 overflow-y-auto">
+        `;
+        
+        for (const item of levelItems) {
+            const preview = level !== 'high' && item.preview ? `<p class="text-xs text-muted mt-1 line-clamp-2">${escapeHtml(item.preview.slice(0, 200))}</p>` : '';
+            html += `
+                <div class="flex items-start gap-2 p-2 bg-surface-dim rounded-lg text-sm">
+                    <input type="checkbox" checked data-uid="${item.uid}" data-confidence="${level}" onchange="toggleBatchItem('${item.uid}', this.checked)" class="mt-1">
+                    <div class="flex-1 min-w-0">
+                        <div class="flex justify-between">
+                            <span class="font-medium truncate">${escapeHtml(item.from_addr || 'Unknown')}</span>
+                            <span class="text-xs text-muted">${item.date || ''}</span>
+                        </div>
+                        <p class="truncate text-muted">${escapeHtml(item.subject || 'No subject')}</p>
+                        ${preview}
+                    </div>
+                </div>
+            `;
+        }
+        
+        html += '</div></div>';
+    }
+    
+    if (html === '') {
+        html = '<p class="text-muted">No items to review.</p>';
+    }
+    
+    document.getElementById('batch-approval-content').innerHTML = html;
+    document.getElementById('batch-approval-modal').classList.remove('hidden');
+    updateApproveButtonCount();
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function toggleConfidenceLevel(level, checked) {
+    const checkboxes = document.querySelectorAll(`input[data-confidence="${level}"]`);
+    checkboxes.forEach(cb => {
+        cb.checked = checked;
+        toggleBatchItem(cb.dataset.uid, checked);
+    });
+}
+
+function toggleBatchItem(uid, checked) {
+    if (checked) {
+        selectedBatchUids.add(uid);
+    } else {
+        selectedBatchUids.delete(uid);
+    }
+    updateApproveButtonCount();
+}
+
+function updateApproveButtonCount() {
+    const btn = document.getElementById('approve-batch-btn');
+    btn.textContent = `✅ Approve Selected (${selectedBatchUids.size})`;
+}
+
+function closeBatchApproval() {
+    document.getElementById('batch-approval-modal').classList.add('hidden');
+    currentBatchItems = [];
+    selectedBatchUids.clear();
+}
+
+async function executeApprovedBatch() {
+    if (selectedBatchUids.size === 0) {
+        alert('No items selected');
+        return;
+    }
+    
+    closeBatchApproval();
+    showBatchProgress('Executing...', 0, selectedBatchUids.size);
+    
+    try {
+        const formData = new FormData();
+        formData.append('uids', JSON.stringify([...selectedBatchUids]));
+        formData.append('action', 'archive');
+        formData.append('folder', 'INBOX');
+        
+        const response = await fetch('/api/chat/batch/approve', {
+            method: 'POST',
+            body: formData,
+        });
+        
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            const chunk = decoder.decode(value);
+            for (const line of chunk.split('\n')) {
+                if (line.startsWith('data: ')) {
+                    const data = line.slice(6);
+                    if (data === '[DONE]') break;
+                    
+                    try {
+                        const event = JSON.parse(data);
+                        if (event.type === 'batch_execute_progress') {
+                            showBatchProgress('Executing...', event.processed, event.total);
+                        } else if (event.type === 'batch_execute_complete') {
+                            hideBatchProgress();
+                            addMessage('assistant', `✅ Batch complete: ${event.success} processed, ${event.errors} errors.`);
+                        }
+                    } catch (e) {}
+                }
+            }
+        }
+    } catch (error) {
+        hideBatchProgress();
+        addMessage('assistant', `❌ Error: ${error.message}`);
+    }
+}
 </script>
 {% endblock %}
